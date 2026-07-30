@@ -24,6 +24,11 @@ DEVICE_ID = "0123456789abcdef"
 ALLOWED_METHODS = frozenset({
     "auth_status",
     "exchange_cookie",
+    "set_account",
+    "list_notes",
+    "create_note",
+    "update_note",
+    "trash_note",
 })
 
 
@@ -33,6 +38,23 @@ class AuthRequired(Exception):
 
 class NotFound(Exception):
     """요청한 노트가 없다."""
+
+
+def _serialize(node) -> dict:
+    """Keep 노드를 RPC 로 넘길 수 있는 평평한 dict 로 변환한다.
+
+    서식 정보는 Keep 에 존재하지 않으므로 여기에도 없다. 위치/크기/서식은
+    Electron 쪽 state.json 이 노트 id 를 키로 따로 들고 있다.
+    """
+    return {
+        "id": node.id,
+        "title": node.title or "",
+        "text": node.text or "",
+        "color": node.color.name,
+        "pinned": bool(node.pinned),
+        "archived": bool(node.archived),
+        "updated": node.timestamps.updated.isoformat(),
+    }
 
 
 class KeepService:
@@ -56,6 +78,58 @@ class KeepService:
             )
         keyring.set_password(SERVICE, email, token)
         self._keep = None  # 다음 호출에서 새 토큰으로 재인증
+        return {"ok": True}
+
+    # --- 노트 -------------------------------------------------------------
+
+    def set_account(self, email: str) -> dict:
+        self._email = email
+        self._keep = None
+        return {"ok": True}
+
+    def list_notes(self) -> dict:
+        keep = self._require_keep()
+        notes = [_serialize(n) for n in keep.find()]
+        notes.sort(key=lambda n: n["updated"], reverse=True)
+        return {"notes": notes}
+
+    def create_note(self, title: str = "", text: str = "") -> dict:
+        keep = self._require_keep()
+        node = keep.createNote(title, text)
+        keep.sync()
+        return {"note": _serialize(node)}
+
+    def update_note(self, id: str, title=None, text=None) -> dict:  # noqa: A002
+        keep = self._require_keep()
+        node = keep.get(id)
+        if node is None:
+            raise NotFound(id)
+        if title is not None:
+            node.title = title
+        if text is not None:
+            node.text = text
+        sent_text = node.text or ""
+
+        keep.sync()
+
+        # sync 는 서버 판정 결과를 로컬 노드에 덮어쓴다. 우리가 보낸 것과
+        # 다르면 다른 기기의 편집이 이겼다는 뜻이다.
+        after = keep.get(id)
+        if after is None:
+            raise NotFound(id)
+        return {
+            "note": _serialize(after),
+            "conflict": (after.text or "") != sent_text,
+            "sentText": sent_text,
+        }
+
+    def trash_note(self, id: str) -> dict:  # noqa: A002
+        keep = self._require_keep()
+        node = keep.get(id)
+        if node is None:
+            raise NotFound(id)
+        node.trash()  # delete() 가 아니다. Keep 휴지통에서 7일간 복구 가능.
+        keep.sync()
         return {"ok": True}
 
     # --- 내부 -------------------------------------------------------------

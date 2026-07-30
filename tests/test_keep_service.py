@@ -95,3 +95,109 @@ def test_non_object_json_returns_bad_request(service, line):
     res = ks.handle(service, line)
     assert res["error"]["code"] == "BAD_REQUEST"
     assert res["id"] is None
+
+
+class FakeTimestamps:
+    def __init__(self):
+        import datetime
+        self.updated = datetime.datetime(2026, 7, 30, 9, 0, 0)
+
+
+class FakeColor:
+    name = "Yellow"
+
+
+class FakeNode:
+    def __init__(self, node_id="n1", title="", text=""):
+        self.id = node_id
+        self.title = title
+        self.text = text
+        self.color = FakeColor()
+        self.pinned = False
+        self.archived = False
+        self.trashed = False
+        self.timestamps = FakeTimestamps()
+
+    def trash(self):
+        self.trashed = True
+
+
+class FakeKeepWithNodes(FakeKeep):
+    """sync 시 서버가 본문을 덮어쓰는 상황까지 흉내낸다."""
+
+    def __init__(self):
+        super().__init__()
+        self.nodes = {}
+        self.server_override = None
+
+    def createNote(self, title=None, text=None):  # noqa: N802 - gkeepapi 명명 규칙
+        node = FakeNode(f"n{len(self.nodes) + 1}", title or "", text or "")
+        self.nodes[node.id] = node
+        return node
+
+    def get(self, node_id):
+        return self.nodes.get(node_id)
+
+    def find(self, **kwargs):
+        return iter([n for n in self.nodes.values() if not n.trashed])
+
+    def sync(self, resync=False):
+        super().sync(resync)
+        if self.server_override is not None:
+            for node in self.nodes.values():
+                node.text = self.server_override
+
+
+@pytest.fixture
+def account(monkeypatch):
+    monkeypatch.setattr(ks.keyring, "get_password", lambda s, e: "good-token")
+    svc = ks.KeepService(keep_factory=FakeKeepWithNodes)
+    ks.handle(svc, json.dumps({"id": 0, "method": "set_account",
+                               "params": {"email": "a@b.com"}}))
+    return svc
+
+
+def _call(svc, method, **params):
+    return ks.handle(svc, json.dumps({"id": 1, "method": method, "params": params}))
+
+
+def test_create_then_list(account):
+    _call(account, "create_note", title="제목", text="본문")
+    res = _call(account, "list_notes")
+    notes = res["result"]["notes"]
+    assert len(notes) == 1
+    assert notes[0]["title"] == "제목"
+    assert notes[0]["text"] == "본문"
+    assert notes[0]["color"] == "Yellow"
+    assert notes[0]["updated"] == "2026-07-30T09:00:00"
+
+
+def test_update_without_conflict(account):
+    created = _call(account, "create_note", title="t", text="원본")["result"]["note"]
+    res = _call(account, "update_note", id=created["id"], text="수정본")["result"]
+    assert res["conflict"] is False
+    assert res["note"]["text"] == "수정본"
+
+
+def test_update_detects_conflict_when_server_overrides(account):
+    created = _call(account, "create_note", title="t", text="원본")["result"]["note"]
+    account._keep.server_override = "폰에서 고친 내용"
+    res = _call(account, "update_note", id=created["id"], text="PC에서 고친 내용")["result"]
+    assert res["conflict"] is True
+    assert res["sentText"] == "PC에서 고친 내용"
+    assert res["note"]["text"] == "폰에서 고친 내용"
+
+
+def test_update_missing_note_is_not_found(account):
+    res = _call(account, "update_note", id="없는id", text="x")
+    assert res["error"]["code"] == "NOT_FOUND"
+
+
+def test_trash_removes_from_list(account):
+    created = _call(account, "create_note", title="t", text="x")["result"]["note"]
+    assert _call(account, "trash_note", id=created["id"])["result"] == {"ok": True}
+    assert _call(account, "list_notes")["result"]["notes"] == []
+
+
+def test_trash_missing_note_is_not_found(account):
+    assert _call(account, "trash_note", id="없는id")["error"]["code"] == "NOT_FOUND"
