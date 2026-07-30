@@ -55,6 +55,47 @@ def cmd_selfcheck() -> int:
     return 0
 
 
+def cmd_roundtrip(email: str) -> int:
+    """실계정 왕복 검증: 생성 -> 읽기 -> 수정 -> 확인 -> 휴지통.
+
+    설계 문서 §7 R3(쓰기가 Keep에 반영되는가)를 사람 개입 없이 확인한다.
+    """
+    token = keyring.get_password(SERVICE, email)
+    if not token:
+        print(f"[실패] 저장된 토큰 없음. 먼저 `python keep_probe.py cookie {email}` 실행.",
+              file=sys.stderr)
+        return 1
+
+    keep = gkeepapi.Keep()
+    keep.authenticate(email, token, device_id=DEVICE_ID)
+
+    marker = "keep-sticky roundtrip 검증용 - 자동 삭제됨"
+    note = keep.createNote("[TEST] keep-sticky", marker)
+    keep.sync()
+    note_id = note.id
+    print(f"  1. 생성 완료 id={note_id}")
+
+    keep.sync(resync=True)
+    fetched = keep.get(note_id)
+    assert fetched is not None, "생성한 노트를 다시 읽지 못함"
+    assert fetched.text == marker, f"본문 불일치: {fetched.text!r}"
+    print("  2. 읽기 확인")
+
+    edited = marker + " / 수정됨"
+    fetched.text = edited
+    keep.sync()
+    keep.sync(resync=True)
+    again = keep.get(note_id)
+    assert again.text == edited, f"수정이 반영되지 않음: {again.text!r}"
+    print("  3. 수정 확인")
+
+    again.trash()
+    keep.sync()
+    print("  4. 휴지통 이동 완료 (Keep 휴지통에서 7일간 복구 가능)")
+    print("[성공] 왕복 검증 통과 - 쓰기가 Keep에 반영됨 (R3 해소)")
+    return 0
+
+
 def _store(email: str, token: str) -> int:
     keyring.set_password(SERVICE, email, token)
     print(f"[성공] master token 발급 완료 ({token[:8]}...) "
@@ -166,6 +207,9 @@ def main() -> int:
 
     sub.add_parser("selfcheck", help="계정 없이 라이브러리 동작만 확인")
 
+    rt = sub.add_parser("roundtrip", help="실계정 왕복 검증 (생성/수정/삭제)")
+    rt.add_argument("email")
+
     a = p.parse_args()
     if a.cmd == "selfcheck":
         return cmd_selfcheck()
@@ -173,6 +217,8 @@ def main() -> int:
         return cmd_login(a.email, a.echo)
     if a.cmd == "cookie":
         return cmd_cookie(a.email)
+    if a.cmd == "roundtrip":
+        return cmd_roundtrip(a.email)
     return cmd_list(a.email, a.label, a.dump)
 
 
