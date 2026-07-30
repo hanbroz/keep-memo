@@ -84,6 +84,10 @@ def handle(service: KeepService, line: str) -> dict:
     except json.JSONDecodeError as exc:
         return {"id": None, "error": {"code": "BAD_REQUEST", "message": str(exc)}}
 
+    if not isinstance(req, dict):
+        return {"id": None, "error": {"code": "BAD_REQUEST",
+                                       "message": f"요청은 JSON 객체여야 한다: {type(req).__name__} 를 받았다"}}
+
     rid = req.get("id")
     method = req.get("method")
     params = req.get("params") or {}

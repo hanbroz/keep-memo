@@ -87,3 +87,11 @@ def test_token_never_appears_in_response(service, monkeypatch):
     res = ks.handle(service, json.dumps({"id": 11, "method": "auth_status",
                                          "params": {"email": "a@b.com"}}))
     assert "aas_et/secret" not in json.dumps(res)
+
+
+@pytest.mark.parametrize("line", ["null", "42", "[1, 2]"])
+def test_non_object_json_returns_bad_request(service, line):
+    """유효한 JSON 이지만 객체가 아니면 .get() 이 AttributeError 를 던진다."""
+    res = ks.handle(service, line)
+    assert res["error"]["code"] == "BAD_REQUEST"
+    assert res["id"] is None
