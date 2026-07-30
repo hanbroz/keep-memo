@@ -1,0 +1,23 @@
+# OMC 운영 산출물 (.omc/skills 는 예외적으로 커밋 대상)
+.omc/*
+!.omc/skills/
+
+# Node / Electron
+node_modules/
+dist/
+out/
+release/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.spec
+build/
+
+# 자격증명은 어떤 형태로도 저장소에 들어오지 않는다.
+# master token 은 OS 자격증명 저장소(keyring)에만 존재한다.
+*.token
+.env
+.env.*
