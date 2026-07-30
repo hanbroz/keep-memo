@@ -201,3 +201,23 @@ def test_trash_removes_from_list(account):
 
 def test_trash_missing_note_is_not_found(account):
     assert _call(account, "trash_note", id="없는id")["error"]["code"] == "NOT_FOUND"
+
+
+def test_update_title_only_preserves_text(account):
+    """text 없이 title 만 보내면 기존 본문이 유지되고, sentText 는 그 유지된 본문이어야 한다."""
+    created = _call(account, "create_note", title="원래 제목", text="유지될 본문")["result"]["note"]
+    res = _call(account, "update_note", id=created["id"], title="새 제목")["result"]
+    assert res["note"]["title"] == "새 제목"
+    assert res["note"]["text"] == "유지될 본문"
+    assert res["conflict"] is False
+    assert res["sentText"] == "유지될 본문"
+
+
+def test_update_title_only_detects_conflict_when_server_overrides(account):
+    """title 만 바꿔도 sync 후 서버가 본문을 덮어썼다면 여전히 충돌로 잡혀야 한다."""
+    created = _call(account, "create_note", title="원래 제목", text="원본 본문")["result"]["note"]
+    account._keep.server_override = "폰에서 고친 내용"
+    res = _call(account, "update_note", id=created["id"], title="새 제목")["result"]
+    assert res["conflict"] is True
+    assert res["sentText"] == "원본 본문"
+    assert res["note"]["text"] == "폰에서 고친 내용"
