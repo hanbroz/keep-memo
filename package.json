@@ -1,0 +1,13 @@
+{
+  "name": "keep-sticky",
+  "version": "0.1.0",
+  "description": "Google Keep 연동 바탕화면 포스트잇",
+  "main": "app/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test --test-force-exit app/test/*.test.js"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0"
+  }
+}
