@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'">
+  <title>수동 로그인</title>
+  <style>
+    body { font-family: 'Malgun Gothic', sans-serif; padding: 24px; word-break: keep-all; }
+    ol { line-height: 1.9; padding-left: 20px; }
+    input { width: 100%; padding: 8px; font-family: Consolas, monospace; }
+    .warn { color: #b45309; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h2>Google 계정 연결 (수동)</h2>
+  <p class="warn">oauth_token 은 1회용이고 약 60초 만에 만료됩니다. 5번까지 끝낸 뒤 바로 붙여넣으세요.</p>
+  <ol>
+    <li>시크릿 창에서 <code>https://accounts.google.com/EmbeddedSetup</code> 접속 후 로그인</li>
+    <li>F12 를 눌러 개발자도구를 연다</li>
+    <li>"동의" 클릭. 화면이 계속 로딩되는 것은 정상이며 무시한다</li>
+    <li>Application → Cookies → https://accounts.google.com</li>
+    <li><code>oauth_token</code> 행의 Value 복사 (<code>oauth2_4/</code> 로 시작)</li>
+  </ol>
+  <input id="token" placeholder="oauth2_4/..." autocomplete="off">
+  <p><button id="submit">연결</button> <span id="status"></span></p>
+  <script src="manual-login.js"></script>
+</body>
+</html>
