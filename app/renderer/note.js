@@ -3,6 +3,11 @@
 const DEBOUNCE_MS = 1500
 let noteId = null
 let timer = null
+// 서버에 마지막으로 반영된(또는 애초에 불러온) 텍스트. "타이머가 걸려
+// 있는가"가 아니라 이 값과 body.value 가 다른가로 미저장 편집 유무를
+// 판단한다 — 우클릭 후 취소처럼 타이머 없이도 미저장 편집이 남는 경로가
+// 있기 때문이다.
+let savedText = ''
 
 const body = document.getElementById('body')
 const status = document.getElementById('status')
@@ -40,8 +45,10 @@ async function flush () {
   if (res.conflict) {
     showConflict(res.sentText)
     body.value = res.note.text // 서버가 이긴 내용을 보여준다
+    savedText = res.note.text
   } else {
     badge.classList.remove('show')
+    savedText = attempt
   }
   status.textContent = '저장됨'
 }
@@ -52,8 +59,19 @@ body.addEventListener('input', () => {
   timer = setTimeout(flush, DEBOUNCE_MS)
 })
 
-document.getElementById('close').addEventListener('click', () => {
+document.getElementById('close').addEventListener('click', async () => {
+  // 디바운스 타이머를 먼저 끊는다 — 곧이어 flush() 를 직접 부르므로,
+  // 남은 타이머가 뒤늦게 두 번째 저장을 걸지 않게 한다.
   clearTimeout(timer)
+  // "타이머가 걸려 있었는가"는 미저장 편집의 정확한 신호가 아니다 (우클릭 →
+  // 취소 경로는 타이머 없이도 미저장 편집을 남긴다). 실제로 서버에 반영된
+  // 마지막 텍스트와 다른지로 판단한다.
+  if (body.value !== savedText) {
+    // flush() 는 실패해도 거절하지 않는다 — 실패하면 conflictBackup 에 이미
+    // 보관한 뒤 돌아오므로, 성공 여부와 무관하게 닫아도 편집을 잃지 않는다.
+    // 여기서 닫기를 막으면 사용자가 닫을 수 없는 창에 갇히므로 막지 않는다.
+    await flush()
+  }
   window.keepSticky.closeNote(noteId)
 })
 
@@ -80,4 +98,5 @@ window.keepSticky.noteId().then(async (id) => {
   const { notes } = await window.keepSticky.listNotes()
   const note = notes.find((n) => n.id === id)
   body.value = note ? note.text : ''
+  savedText = body.value
 })
