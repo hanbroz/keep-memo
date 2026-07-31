@@ -6,6 +6,6 @@ app.whenReady().then(async () => {
   const win = createLoginWindow(BrowserWindow)
   const value = await pollCookie(session.fromPartition('persist:login'),
                                  { intervalMs: 1000, timeoutMs: 300000 })
-  console.log(value ? `쿠키 획득: ${value.slice(0, 16)}...` : '쿠키 획득 실패')
+  console.log(value ? `쿠키 획득: 길이 ${value.length}` : '쿠키 획득 실패')
   win.close()
 })
