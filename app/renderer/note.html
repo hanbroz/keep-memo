@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'">
+  <title>메모</title>
+  <style>
+    html, body { margin: 0; height: 100%; }
+    body {
+      display: flex; flex-direction: column;
+      background: #fdf6a9; font-family: 'Malgun Gothic', sans-serif;
+      border-radius: 6px; overflow: hidden; word-break: keep-all;
+    }
+    /* 상단 바 전체가 드래그 핸들이다. 버튼은 no-drag 로 되돌린다. */
+    #bar { -webkit-app-region: drag; display: flex; align-items: center;
+           gap: 6px; padding: 6px 8px; font-size: 12px; color: #7a6a1f; }
+    #bar button { -webkit-app-region: no-drag; border: 0; background: transparent;
+                  cursor: pointer; font-size: 14px; color: #7a6a1f; }
+    #spacer { flex: 1; }
+    #body { flex: 1; border: 0; outline: 0; resize: none; padding: 10px 14px;
+            background: transparent; font-size: 15px; line-height: 1.6; }
+    #badge { display: none; padding: 6px 14px; background: #f59e0b; color: #fff; font-size: 12px; }
+    #badge.show { display: block; }
+  </style>
+</head>
+<body>
+  <div id="bar">
+    <span id="status"></span>
+    <span id="spacer"></span>
+    <button id="close" title="바탕화면에서 내리기 (Keep 메모는 유지됩니다)">✕</button>
+  </div>
+  <div id="badge"></div>
+  <textarea id="body" spellcheck="false"></textarea>
+  <script src="note.js"></script>
+</body>
+</html>

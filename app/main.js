@@ -42,6 +42,41 @@ function createListWindow () {
   return win
 }
 
+function createNoteWindow (noteId) {
+  const state = store.setNote(noteId, { visible: true })
+  const win = new BrowserWindow({
+    x: state.x,
+    y: state.y,
+    width: state.w,
+    height: state.h,
+    frame: false,
+    transparent: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    webPreferences: { preload: PRELOAD, contextIsolation: true, nodeIntegration: false }
+  })
+  win.loadFile(path.join(__dirname, 'renderer', 'note.html'))
+  noteWindows.set(noteId, win)
+
+  const persistBounds = () => {
+    const b = win.getBounds()
+    store.setNote(noteId, { x: b.x, y: b.y, w: b.width, h: b.height })
+    store.save()
+  }
+  win.on('moved', persistBounds)
+  win.on('resized', persistBounds)
+  win.on('closed', () => noteWindows.delete(noteId))
+
+  store.save()
+  return win
+}
+
+function windowIdOf (event) {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  for (const [id, w] of noteWindows) if (w === win) return id
+  return null
+}
+
 app.whenReady().then(async () => {
   store = new Store(path.join(app.getPath('userData'), 'state.json'))
   store.load()
@@ -59,6 +94,42 @@ app.whenReady().then(async () => {
     } catch (err) {
       return { ok: false, message: err.message }
     }
+  })
+
+  ipcMain.handle('notes:currentId', (event) => windowIdOf(event))
+
+  ipcMain.handle('notes:open', (_e, id) => {
+    const existing = noteWindows.get(id)
+    if (existing) { existing.focus(); return { ok: true } }
+    createNoteWindow(id)
+    return { ok: true }
+  })
+
+  ipcMain.handle('notes:close', (_e, id) => {
+    // 바탕화면에서 내리기만 한다. Keep 메모는 그대로 둔다.
+    store.setNote(id, { visible: false })
+    store.save()
+    const win = noteWindows.get(id)
+    if (win) win.close()
+    return { ok: true }
+  })
+
+  ipcMain.handle('notes:update', async (_e, id, patch) => {
+    const res = await sidecar.call('update_note', { id, text: patch.text })
+    if (res.conflict) {
+      store.setNote(id, { conflictBackup: res.sentText })
+      store.save()
+    }
+    return res
+  })
+
+  ipcMain.handle('notes:trash', async (_e, id) => {
+    await sidecar.call('trash_note', { id })
+    store.setNote(id, { visible: false })
+    store.save()
+    const win = noteWindows.get(id)
+    if (win) win.close()
+    return { ok: true }
   })
 
   if (!(await ensureAuth())) {
