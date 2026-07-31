@@ -36,7 +36,15 @@ class Sidecar {
   }
 
   start () {
-    this.proc = spawn(this.command, this.args, { stdio: ['pipe', 'pipe', 'pipe'] })
+    this.proc = spawn(this.command, this.args, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      // keep_service.py 는 진입점에서 stdin/stdout 을 UTF-8 로 reconfigure
+      // 하지만, 그 줄이 실행되기 전(예: import 단계에서 터지는 트레이스백)에는
+      // 여전히 OS 로캘 코드페이지 — 한국어 Windows 에서는 cp949 — 를 쓴다.
+      // 그 창을 없애려면 프로세스 자체를 UTF-8 로 띄워야 한다. 이게 없으면
+      // 가장 필요한 순간(초기화 실패 메시지)에 정작 그 메시지가 또 깨진다.
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+    })
     readline.createInterface({ input: this.proc.stdout })
       .on('line', (line) => this._onLine(line))
     // stderr 는 반드시 비워야 한다. 읽지 않으면 파이프 버퍼(Windows 약 64KB)가

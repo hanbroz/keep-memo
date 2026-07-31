@@ -1,3 +1,4 @@
+import io
 import json
 
 import pytest
@@ -221,3 +222,26 @@ def test_update_title_only_detects_conflict_when_server_overrides(account):
     assert res["conflict"] is True
     assert res["sentText"] == "원본 본문"
     assert res["note"]["text"] == "폰에서 고친 내용"
+
+
+def test_serve_survives_cp949_stdout_with_emoji_note(account):
+    """한국어 Windows 의 기본 콘솔 코드페이지는 cp949 이고, 이모지처럼 BMP 밖
+    문자는 표현하지 못한다. 실사용자가 겪은 크래시: 노트 본문에 이모지가 있으면
+    list_notes 응답을 cp949 스트림에 그대로 쓰다가 UnicodeEncodeError 로
+    사이드카 전체가 죽었다 (ensure_ascii=False 였기 때문). serve() 는 응답을
+    ensure_ascii=True 로 이스케이프해야 하고, 어떤 인코딩의 스트림을 받아도
+    죽지 않아야 한다.
+    """
+    _call(account, "create_note", title="메모", text="생각 정리 \U0001f9e0")
+
+    request_line = json.dumps({"id": 1, "method": "list_notes", "params": {}}) + "\n"
+    stdin = io.StringIO(request_line)
+    raw_out = io.BytesIO()
+    stdout = io.TextIOWrapper(raw_out, encoding="cp949", newline="\n")
+
+    ks.serve(account, stdin=stdin, stdout=stdout)
+    stdout.flush()
+
+    emitted = raw_out.getvalue().decode("cp949").strip()
+    res = json.loads(emitted)
+    assert res["result"]["notes"][0]["text"] == "생각 정리 \U0001f9e0"

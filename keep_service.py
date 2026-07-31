@@ -189,9 +189,26 @@ def serve(service: KeepService, stdin=None, stdout=None) -> None:
         line = line.strip()
         if not line:
             continue
-        stdout.write(json.dumps(handle(service, line), ensure_ascii=False) + "\n")
+        # ensure_ascii=True: 응답을 \uXXXX 이스케이프로만 이루어진 순수 ASCII
+        # 로 만든다. 한국어 Windows 콘솔의 기본 코드페이지(cp949)는 이모지 같은
+        # BMP 밖 문자를 인코딩하지 못해, ensure_ascii=False 로 원문 그대로 쓰면
+        # UnicodeEncodeError 로 사이드카가 즉사한다 — stdout 이 무슨 인코딩이든
+        # ASCII 이스케이프는 항상 쓸 수 있으므로 이 경로는 스트림 인코딩에
+        # 의존하지 않는다. Node 쪽 JSON.parse 는 \uXXXX 이스케이프를 그대로
+        # 복원하므로 app/sidecar.js 는 변경할 필요가 없다.
+        stdout.write(json.dumps(handle(service, line), ensure_ascii=True) + "\n")
         stdout.flush()
 
 
 if __name__ == "__main__":
+    # 실제 진입점에서만 전역 스트림을 재설정한다. serve() 는 스트림을 인자로
+    # 받고 테스트가 자신의 스트림(cp949 등)을 넘기므로, 여기 말고 serve()
+    # 안에서 sys.stdin/stdout 을 건드리면 테스트를 예측 불가능하게 만든다.
+    #
+    # 출력만 고치면 절반만 고친 것이다: sys.stdin 도 로캘 코드페이지를 물려받고
+    # 있어서, Electron 이 UTF-8 로 써 보내는 한국어 노트 제목/본문(렌더러가
+    # 입력한 텍스트)이 여기서 잘못 디코딩된다. 아직 아무도 못 봤을 뿐, 이 경로도
+    # 살아있는 버그다. reconfigure 로 양방향 다 UTF-8 로 정직하게 맞춘다.
+    sys.stdin.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8")
     serve(KeepService())
