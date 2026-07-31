@@ -4,6 +4,7 @@ const { app, BrowserWindow, ipcMain, session, dialog } = require('electron')
 const { Sidecar } = require('./sidecar')
 const { Store } = require('./store')
 const { createLoginWindow, pollCookie } = require('./login')
+const { resolveSidecarCommand } = require('./sidecar-path')
 
 const EMAIL_KEY = 'you@gmail.com' // Phase 2 에서 설정 화면으로 옮긴다
 const PRELOAD = path.join(__dirname, 'preload.js')
@@ -13,8 +14,15 @@ let store = null
 const noteWindows = new Map() // noteId -> BrowserWindow
 
 function startSidecar () {
-  // 개발 중에는 시스템 python 을, 배포본에서는 PyInstaller 산출물을 쓴다 (Task 8).
-  sidecar = new Sidecar('python', [path.join(__dirname, '..', 'keep_service.py')]).start()
+  const { command, args } = resolveSidecarCommand(app.isPackaged, process.resourcesPath, __dirname)
+  sidecar = new Sidecar(command, args, {
+    maxRestarts: 3,
+    onDead: (message) => {
+      dialog.showErrorBox('Keep 연결 끊김',
+        `백그라운드 서비스가 반복해서 종료되었습니다.\n\n${message}\n\n` +
+        '앱을 다시 시작해 주세요. 편집 중이던 내용은 저장되지 않았을 수 있습니다.')
+    }
+  }).start()
   return sidecar
 }
 
@@ -144,6 +152,8 @@ app.whenReady().then(async () => {
     return
   }
   await sidecar.call('set_account', { email: EMAIL_KEY })
+  // 지난 세션에 띄워둔 포스트잇을 위치까지 복원한다.
+  for (const id of store.visibleIds()) createNoteWindow(id)
   createListWindow()
 })
 

@@ -5,9 +5,18 @@
   "main": "app/main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node --test app/test/*.test.js"
+    "test": "node --test app/test/*.test.js",
+    "dist": "electron-builder"
   },
   "devDependencies": {
-    "electron": "^33.0.0"
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.keepsticky.app",
+    "productName": "Keep Sticky",
+    "files": ["app/**/*", "package.json"],
+    "extraResources": [{ "from": "dist-py/keep_service.exe", "to": "keep_service.exe" }],
+    "win": { "target": "nsis" }
   }
 }
