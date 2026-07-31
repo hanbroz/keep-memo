@@ -75,8 +75,12 @@ def cmd_roundtrip(email: str) -> int:
     try:
         marker = "keep-sticky roundtrip 검증용 - 자동 삭제됨"
         note = keep.createNote("[TEST] keep-sticky", marker)
-        keep.sync()
+        # sync() '전에' 잡는다. gkeepapi는 id를 클라이언트에서 만들므로 이 시점에
+        # 이미 확정돼 있고, sync()가 노트를 서버에 만든 뒤 예외를 던지더라도
+        # finally의 정리 조건(note_id is not None)이 성립한다. sync() 뒤에
+        # 대입하면 그 경우 테스트 노트가 실계정에 그대로 남는다.
         note_id = note.id
+        keep.sync()
         print(f"  1. 생성 완료 id={note_id}")
 
         keep.sync(resync=True)

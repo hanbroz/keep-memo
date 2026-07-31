@@ -11,5 +11,10 @@ contextBridge.exposeInMainWorld('keepSticky', {
   openNote: (id) => ipcRenderer.invoke('notes:open', id),
   closeNote: (id) => ipcRenderer.invoke('notes:close', id),
   exchangeCookie: (token) => ipcRenderer.invoke('auth:exchange', token),
-  noteId: () => ipcRenderer.invoke('notes:currentId')
+  noteId: () => ipcRenderer.invoke('notes:currentId'),
+  // 메인 프로세스가 창을 닫기 직전에 부른다. ✕ 를 거치지 않는 닫기(Alt+F4,
+  // 종료/로그오프)에서도 미저장 편집을 저장할 마지막 기회다. 이벤트 객체는
+  // 렌더러에 넘기지 않는다 — sender 를 통해 IPC 표면이 새어나가면 안 된다.
+  onFlushRequest: (cb) => ipcRenderer.on('notes:flush', () => cb()),
+  flushDone: () => ipcRenderer.send('notes:flushed')
 })

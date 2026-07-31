@@ -8,6 +8,10 @@ let timer = null
 // 판단한다 — 우클릭 후 취소처럼 타이머 없이도 미저장 편집이 남는 경로가
 // 있기 때문이다.
 let savedText = ''
+// 본문을 실제로 Keep 에서 받아왔는가. 이 값이 false 인 동안 저장 경로는 완전히
+// 닫혀 있다 — 비어 있는 본문으로 update_note 를 부르면 Keep 의 진짜 내용이
+// 통째로 지워지고, Keep 에는 노트별 버전 기록이 없어 되돌릴 방법이 없다.
+let loaded = false
 
 const body = document.getElementById('body')
 const status = document.getElementById('status')
@@ -29,7 +33,20 @@ function showSaveFailure (unsavedText) {
   badge.title = unsavedText
 }
 
+function showLoadFailure (message) {
+  // 배지를 재사용하되 문구는 다르다. 이건 충돌도 저장 실패도 아니고 "아직 아무
+  // 것도 못 받았다"는 상태다. 사용자가 여기에 타이핑할 수 있으면 안 된다.
+  badge.textContent = `메모를 불러오지 못했습니다 — 편집이 잠겨 있습니다: ${message}`
+  badge.classList.add('show')
+  badge.title = message
+  status.textContent = '불러오기 실패'
+}
+
 async function flush () {
+  // 불러오지 못한(또는 아직 못 불러온) 본문으로는 절대 저장하지 않는다.
+  // 이 한 줄이 "빈 포스트잇에 한 글자 → Keep 메모 전체가 그 한 글자로 교체"
+  // 를 막는 마지막 방어선이다.
+  if (!loaded) return
   const attempt = body.value
   status.textContent = '저장 중'
   const res = await window.keepSticky.updateNote(noteId, { text: attempt })
@@ -90,13 +107,42 @@ document.addEventListener('contextmenu', async (e) => {
     // 실패하면 main 프로세스가 창을 닫지 않으므로 메모와 창은 그대로다.
     // 사용자가 "휴지통으로 보냈다"고 착각한 채 창을 닫지 않도록 알린다.
     status.textContent = res.code === 'AUTH_REQUIRED' ? '재로그인 필요' : '휴지통 이동 실패'
+    return
+  }
+  // 휴지통으로 보냈으면 이 창의 저장 경로를 닫는다. main 이 곧 창을 닫는데,
+  // 그 닫기 경로가 마지막 flush 를 요청하므로 열어두면 방금 버린 메모에
+  // update_note 가 날아간다.
+  loaded = false
+  body.readOnly = true
+})
+
+// 메인 프로세스가 창을 닫기 직전에 부른다 (Alt+F4·종료 등 ✕ 를 거치지 않는
+// 경로 포함). 저장할 게 없으면 곧바로 끝났다고 알린다 — 메인은 유한한 시간만
+// 기다리므로 어떤 경로로든 반드시 응답해야 한다.
+window.keepSticky.onFlushRequest(async () => {
+  clearTimeout(timer)
+  try {
+    if (loaded && body.value !== savedText) await flush()
+  } finally {
+    window.keepSticky.flushDone()
   }
 })
 
 window.keepSticky.noteId().then(async (id) => {
+  // id 는 ✕(닫기)에도 필요하므로 먼저 잡는다. 불러오기가 실패해도 사용자가
+  // 창을 내릴 수는 있어야 한다. 저장 경로를 여는 것은 이 id 가 아니라 아래의
+  // loaded / readOnly 다.
   noteId = id
+  status.textContent = '불러오는 중'
   const { notes } = await window.keepSticky.listNotes()
   const note = notes.find((n) => n.id === id)
-  body.value = note ? note.text : ''
-  savedText = body.value
+  // 목록에 없는 id 도 실패다. 여기서 빈 문자열로 폴백하면 그게 곧 원본 삭제다.
+  if (!note) throw new Error('목록에서 이 메모를 찾지 못했습니다')
+  body.value = note.text
+  savedText = note.text
+  loaded = true
+  body.readOnly = false // 여기가 편집이 열리는 유일한 지점이다
+  status.textContent = ''
+}).catch((err) => {
+  showLoadFailure(err && err.message ? err.message : String(err))
 })

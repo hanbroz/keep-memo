@@ -12,6 +12,10 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     }) + '\n')
   } else if (req.method === 'silent') {
     // 일부러 응답하지 않는다 -> 타임아웃 경로 검증
+  } else if (req.method === 'noisy') {
+    // stderr 로 한 줄 뱉는다 -> 진단용 링버퍼 경로 검증 (파이썬 트레이스백 대역)
+    process.stderr.write(String(req.params.line) + '\n')
+    process.stdout.write(JSON.stringify({ id: req.id, result: { ok: true } }) + '\n')
   } else if (req.method === 'die') {
     process.exit(3)
   }

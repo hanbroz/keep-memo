@@ -19,6 +19,9 @@
     #spacer { flex: 1; }
     #body { flex: 1; border: 0; outline: 0; resize: none; padding: 10px 14px;
             background: transparent; font-size: 15px; line-height: 1.6; }
+    /* 본문을 아직(또는 영영) 불러오지 못한 상태. 비어 있는 본문을 편집 가능한
+       채로 열어두면 한 글자만 쳐도 Keep 의 원본이 그 한 글자로 덮인다. */
+    #body[readonly] { color: #9a9377; background: rgba(0, 0, 0, 0.04); cursor: default; }
     #badge { display: none; padding: 6px 14px; background: #f59e0b; color: #fff; font-size: 12px; }
     #badge.show { display: block; }
   </style>
@@ -30,7 +33,9 @@
     <button id="close" title="바탕화면에서 내리기 (Keep 메모는 유지됩니다)">✕</button>
   </div>
   <div id="badge"></div>
-  <textarea id="body" spellcheck="false"></textarea>
+  <!-- 불러오기가 성공해야만 note.js 가 readonly 를 푼다. 기본값이 편집 가능이면
+       느린 로딩 중에 친 글자가 Keep 원본을 덮어쓰는 경로가 열린다. -->
+  <textarea id="body" spellcheck="false" readonly></textarea>
   <script src="note.js"></script>
 </body>
 </html>
