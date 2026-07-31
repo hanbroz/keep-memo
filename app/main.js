@@ -123,16 +123,31 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('notes:update', async (_e, id, patch) => {
-    const res = await sidecar.call('update_note', { id, text: patch.text })
-    if (res.conflict) {
-      store.setNote(id, { conflictBackup: res.sentText })
+    try {
+      const res = await sidecar.call('update_note', { id, text: patch.text })
+      if (res.conflict) {
+        store.setNote(id, { conflictBackup: res.sentText })
+        store.save()
+      }
+      return { ok: true, ...res }
+    } catch (err) {
+      // ipcMain.handle 이 던지면 렌더러에는 message 만 건너간다 (err.code 는
+      // 사라진다). 그러면 재로그인 필요 여부를 렌더러가 알 수 없다. 그래서
+      // 여기서 잡아 shape 로 돌려준다 — auth:exchange 와 같은 관례다.
+      // 저장 자체가 실패했으므로 이 편집은 서버에 도달하지 못했다. 충돌과
+      // 같은 방식으로 conflictBackup 에 보관해 ✕ 를 눌러도 사라지지 않게 한다.
+      store.setNote(id, { conflictBackup: patch.text })
       store.save()
+      return { ok: false, message: err.message, code: err.code }
     }
-    return res
   })
 
   ipcMain.handle('notes:trash', async (_e, id) => {
-    await sidecar.call('trash_note', { id })
+    try {
+      await sidecar.call('trash_note', { id })
+    } catch (err) {
+      return { ok: false, message: err.message, code: err.code }
+    }
     store.setNote(id, { visible: false })
     store.save()
     const win = noteWindows.get(id)
