@@ -16,8 +16,15 @@ class Store {
     try {
       const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf8'))
       this.data = { notes: parsed.notes || {} }
-    } catch {
-      // 파일이 없거나 손상됐다. 상태 파일 하나 때문에 앱이 못 뜨면 안 된다.
+    } catch (err) {
+      // 파일이 아예 없는 것(ENOENT)은 첫 실행이므로 조용히 넘어간다.
+      // 그 외(손상된 JSON, 권한 오류, 백신의 파일 잠금 등)는 진짜 환경
+      // 문제일 수 있으므로 경고를 남긴다 — 단, 에러 코드와 경로만 남기고
+      // 파일 내용은 절대 로그에 남기지 않는다. 어느 경우든 상태 파일
+      // 하나 때문에 앱이 못 뜨면 안 되므로 빈 상태로 폴백한다.
+      if (err.code !== 'ENOENT') {
+        console.warn(`상태 파일을 읽지 못했다 (${err.code}): ${this.filePath}`)
+      }
       this.data = { notes: {} }
     }
     return this.data
