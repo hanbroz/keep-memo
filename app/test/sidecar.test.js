@@ -41,6 +41,7 @@ test('사이드카가 죽으면 대기 중인 요청이 전부 거부된다', as
   const pending = s.call('silent')
   s.call('die').catch(() => {})
   await assert.rejects(pending, (err) => err.code === 'SIDECAR_DEAD')
+  s.stop()
 })
 
 test('사이드카가 죽으면 최대 3회까지 자동 재시작한다', async () => {
