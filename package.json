@@ -6,7 +6,7 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test app/test/*.test.js",
-    "dist": "electron-builder"
+    "dist": "node scripts/build.js"
   },
   "devDependencies": {
     "electron": "^33.0.0",
@@ -17,6 +17,7 @@
     "productName": "Keep Sticky",
     "files": ["app/**/*", "package.json"],
     "extraResources": [{ "from": "dist-py/keep_service.exe", "to": "keep_service.exe" }],
-    "win": { "target": "nsis" }
+    "artifactName": "KeepSticky-${env.BUILD_STAMP}.${ext}",
+    "win": { "target": "portable" }
   }
 }
