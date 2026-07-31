@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'">
+  <title>Keep 계정 설정</title>
+  <style>
+    body { font-family: 'Malgun Gothic', sans-serif; padding: 24px; word-break: keep-all; }
+    p { line-height: 1.7; }
+    input { width: 100%; padding: 8px; font-family: Consolas, monospace; box-sizing: border-box; }
+    .warn { color: #b45309; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h2>Keep 계정 설정</h2>
+  <p>바탕화면에 띄울 Google Keep 메모가 들어 있는 계정의 이메일을 입력해 주세요.
+     이 계정으로 로그인해 메모를 가져옵니다. 한 번만 입력하면 다음부터는 다시
+     묻지 않습니다.</p>
+  <input id="email" placeholder="you@gmail.com" autocomplete="off">
+  <p><button id="submit">시작하기</button> <span id="status" class="warn"></span></p>
+  <script src="setup-email.js"></script>
+</body>
+</html>

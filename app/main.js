@@ -5,6 +5,7 @@ const { Sidecar } = require('./sidecar')
 const { Store } = require('./store')
 const { createLoginWindow, pollCookie } = require('./login')
 const { resolveSidecarCommand } = require('./sidecar-path')
+const { validateEmail } = require('./email-validate')
 
 const PRELOAD = path.join(__dirname, 'preload.js')
 // 창을 닫기 전에 렌더러의 마지막 저장을 기다려 주는 시간. 응답 없는(혹은
@@ -33,6 +34,54 @@ function resolveEmail (store) {
   store.setEmail(fromEnv)
   store.save()
   return fromEnv
+}
+
+function createSetupEmailWindow () {
+  const win = new BrowserWindow({
+    width: 460,
+    height: 300,
+    title: 'Keep 계정 설정',
+    webPreferences: { preload: PRELOAD, contextIsolation: true, nodeIntegration: false }
+  })
+  win.loadFile(path.join(__dirname, 'renderer', 'setup-email.html'))
+  return win
+}
+
+/**
+ * 이메일을 아직 구하지 못했을 때(최초 실행) 창을 띄워 사용자에게 직접 받는다.
+ * 반드시 startSidecar() 보다 먼저 불러야 한다 — 그래야 사용자가 창을 그냥
+ * 닫아도 정리할 사이드카가 없어(마스터 토큰을 쥔 유령 프로세스가 애초에
+ * 생기지 않아) 종료가 항상 깨끗하다.
+ *
+ * 입력이 검증을 통과하면 store 에 저장하고 창을 닫은 뒤 이메일 문자열을
+ * 반환한다. 사용자가 아무것도 입력하지 않고 창을 닫으면 null 을 반환한다 —
+ * 이후 종료 처리는 호출자(app.whenReady())의 책임이다.
+ */
+function promptForEmail (store) {
+  return new Promise((resolve) => {
+    const win = createSetupEmailWindow()
+    let settled = false
+    const finish = (email) => {
+      if (settled) return // ipc 성공 경로와 창 닫힘 경로가 겹쳐 불릴 수 있다
+      settled = true
+      ipcMain.removeHandler('setup:submitEmail')
+      resolve(email)
+    }
+
+    ipcMain.handle('setup:submitEmail', (_e, rawEmail) => {
+      const result = validateEmail(rawEmail)
+      if (!result.ok) return { ok: false, message: result.message }
+      store.setEmail(result.value)
+      store.save()
+      finish(result.value)
+      if (!win.isDestroyed()) win.close()
+      return { ok: true }
+    })
+
+    // 사용자가 ✕ 로 취소하든, 위에서 성공 후 우리가 close() 를 부르든 결국
+    // 여기로 온다. finish 는 멱등하므로 어느 쪽이 먼저 와도 안전하다.
+    win.on('closed', () => finish(null))
+  })
 }
 
 function startSidecar () {
@@ -163,14 +212,19 @@ app.whenReady().then(async () => {
 
   accountEmail = resolveEmail(store)
   if (!accountEmail) {
-    // 사이드카를 아직 시작하지 않았으므로 정리할 것이 없다 — 그래도
-    // ensureAuth 실패 경로와 같은 모양(대화상자 → 사이드카 정리 → quit →
-    // return)을 유지해 종료 경로를 하나로 둔다.
+    // 저장된 값도 환경 변수도 없다 — 최초 실행이다. 사이드카는 아직 시작하지
+    // 않았으므로(아래 startSidecar() 호출 전) 사용자가 창을 그냥 닫아도 정리할
+    // 대상이 없다. 이 순서를 지키는 것이 유령 프로세스를 막는 핵심이다.
+    accountEmail = await promptForEmail(store)
+  }
+  if (!accountEmail) {
+    // 사용자가 이메일을 입력하지 않고 설정 창을 닫았다. ensureAuth 실패
+    // 경로와 같은 모양(대화상자 → 사이드카 정리 → quit → return)을 유지해
+    // 종료 경로를 하나로 둔다 — 창이 하나도 없는 상태에서 조용히 return 하면
+    // window-all-closed 가 영영 불리지 않는다(이 시점까지 창이 열린 적이
+    // 없으므로).
     dialog.showErrorBox('Keep 계정 설정 필요',
-      'Keep 계정 이메일이 설정되지 않았습니다.\n\n' +
-      '환경 변수 KEEP_STICKY_EMAIL 에 Google 계정 이메일을 설정한 뒤 앱을 다시 시작해 주세요.\n' +
-      '예: KEEP_STICKY_EMAIL=you@gmail.com\n\n' +
-      '한 번 설정하면 state.json 에 저장되어 다음부터는 환경 변수가 필요 없습니다.')
+      '이메일을 입력하지 않아 앱을 종료합니다.\n다시 실행하면 설정 창이 다시 열립니다.')
     stopSidecar()
     app.quit()
     return
