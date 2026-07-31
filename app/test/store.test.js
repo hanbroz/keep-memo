@@ -53,3 +53,21 @@ test('visible 이 false 인 노트는 목록에서 빠진다', () => {
   s.setNote('n2', { visible: false })
   assert.deepStrictEqual(s.visibleIds(), ['n1'])
 })
+
+test('이메일을 저장한 뒤 다시 읽으면 값이 유지된다', () => {
+  const file = tmpFile()
+  const a = new Store(file)
+  a.load()
+  a.setEmail('you@gmail.com')
+  a.save()
+
+  const b = new Store(file)
+  b.load()
+  assert.strictEqual(b.getEmail(), 'you@gmail.com')
+})
+
+test('이메일을 설정한 적이 없으면 null 이다', () => {
+  const s = new Store(tmpFile())
+  s.load()
+  assert.strictEqual(s.getEmail(), null)
+})

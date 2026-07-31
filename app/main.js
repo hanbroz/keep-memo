@@ -6,7 +6,6 @@ const { Store } = require('./store')
 const { createLoginWindow, pollCookie } = require('./login')
 const { resolveSidecarCommand } = require('./sidecar-path')
 
-const EMAIL_KEY = 'you@gmail.com' // Phase 2 에서 설정 화면으로 옮긴다
 const PRELOAD = path.join(__dirname, 'preload.js')
 // 창을 닫기 전에 렌더러의 마지막 저장을 기다려 주는 시간. 응답 없는(혹은
 // 이미 사라진) 렌더러 하나 때문에 종료가 막히면 안 되므로 반드시 유한하다.
@@ -15,10 +14,26 @@ const FLUSH_ON_CLOSE_MS = 3000
 
 let sidecar = null
 let store = null
+let accountEmail = null
 let sidecarStopped = false
 let quitTeardownStarted = false
 const noteWindows = new Map() // noteId -> BrowserWindow
 const flushWaiters = new Map() // webContents.id -> 대기 해제 함수
+
+/**
+ * 계정 이메일을 state.json 또는 환경 변수에서 구한다. 저장소(git)에는 개인
+ * 정보를 두지 않는다 — 최초 실행 시 KEEP_STICKY_EMAIL 로 한 번 받으면
+ * state.json 에 저장되어 다음부터는 환경 변수 없이도 동작한다.
+ */
+function resolveEmail (store) {
+  const stored = store.getEmail()
+  if (stored) return stored
+  const fromEnv = process.env.KEEP_STICKY_EMAIL
+  if (!fromEnv) return null
+  store.setEmail(fromEnv)
+  store.save()
+  return fromEnv
+}
 
 function startSidecar () {
   const { command, args } = resolveSidecarCommand(app.isPackaged, process.resourcesPath, __dirname)
@@ -27,7 +42,7 @@ function startSidecar () {
     // 재시작된 파이썬 프로세스는 set_account 이전 상태다. 여기서 다시 세우지
     // 않으면 이후 모든 호출이 AUTH_REQUIRED 로 떨어지고, 재로그인해도 낫지
     // 않는다 — 즉 "재시작 3회"가 죽음을 감추면서 고장을 확정짓는다.
-    onRestart: (s) => s.call('set_account', { email: EMAIL_KEY }),
+    onRestart: (s) => s.call('set_account', { email: accountEmail }),
     onDead: (message) => {
       dialog.showErrorBox('Keep 연결 끊김',
         `백그라운드 서비스가 반복해서 종료되었습니다.\n\n${message}\n\n` +
@@ -70,7 +85,7 @@ function flushAllNotes () {
 }
 
 async function ensureAuth () {
-  const { authenticated } = await sidecar.call('auth_status', { email: EMAIL_KEY })
+  const { authenticated } = await sidecar.call('auth_status', { email: accountEmail })
   if (authenticated) return true
 
   const win = createLoginWindow(BrowserWindow)
@@ -78,7 +93,7 @@ async function ensureAuth () {
                                  { intervalMs: 1000, timeoutMs: 300000 })
   win.close()
   if (!token) return false
-  await sidecar.call('exchange_cookie', { email: EMAIL_KEY, oauth_token: token })
+  await sidecar.call('exchange_cookie', { email: accountEmail, oauth_token: token })
   return true
 }
 
@@ -145,6 +160,22 @@ function windowIdOf (event) {
 app.whenReady().then(async () => {
   store = new Store(path.join(app.getPath('userData'), 'state.json'))
   store.load()
+
+  accountEmail = resolveEmail(store)
+  if (!accountEmail) {
+    // 사이드카를 아직 시작하지 않았으므로 정리할 것이 없다 — 그래도
+    // ensureAuth 실패 경로와 같은 모양(대화상자 → 사이드카 정리 → quit →
+    // return)을 유지해 종료 경로를 하나로 둔다.
+    dialog.showErrorBox('Keep 계정 설정 필요',
+      'Keep 계정 이메일이 설정되지 않았습니다.\n\n' +
+      '환경 변수 KEEP_STICKY_EMAIL 에 Google 계정 이메일을 설정한 뒤 앱을 다시 시작해 주세요.\n' +
+      '예: KEEP_STICKY_EMAIL=you@gmail.com\n\n' +
+      '한 번 설정하면 state.json 에 저장되어 다음부터는 환경 변수가 필요 없습니다.')
+    stopSidecar()
+    app.quit()
+    return
+  }
+
   startSidecar()
 
   ipcMain.handle('notes:list', () => sidecar.call('list_notes'))
@@ -154,7 +185,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('auth:exchange', async (_e, token) => {
     try {
-      await sidecar.call('exchange_cookie', { email: EMAIL_KEY, oauth_token: token })
+      await sidecar.call('exchange_cookie', { email: accountEmail, oauth_token: token })
       return { ok: true }
     } catch (err) {
       return { ok: false, message: err.message }
@@ -231,7 +262,7 @@ app.whenReady().then(async () => {
     app.quit()
     return
   }
-  await sidecar.call('set_account', { email: EMAIL_KEY })
+  await sidecar.call('set_account', { email: accountEmail })
   // 지난 세션에 띄워둔 포스트잇을 위치까지 복원한다.
   for (const id of store.visibleIds()) createNoteWindow(id)
   createListWindow()

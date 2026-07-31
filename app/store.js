@@ -9,13 +9,13 @@ const DEFAULT_NOTE_STATE = { x: 120, y: 120, w: 320, h: 380, visible: false, con
 class Store {
   constructor (filePath) {
     this.filePath = filePath
-    this.data = { notes: {} }
+    this.data = { notes: {}, email: null }
   }
 
   load () {
     try {
       const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf8'))
-      this.data = { notes: parsed.notes || {} }
+      this.data = { notes: parsed.notes || {}, email: parsed.email || null }
     } catch (err) {
       // 파일이 아예 없는 것(ENOENT)은 첫 실행이므로 조용히 넘어간다.
       // 그 외(손상된 JSON, 권한 오류, 백신의 파일 잠금 등)는 진짜 환경
@@ -25,7 +25,7 @@ class Store {
       if (err.code !== 'ENOENT') {
         console.warn(`상태 파일을 읽지 못했다 (${err.code}): ${this.filePath}`)
       }
-      this.data = { notes: {} }
+      this.data = { notes: {}, email: null }
     }
     return this.data
   }
@@ -49,6 +49,16 @@ class Store {
 
   visibleIds () {
     return Object.keys(this.data.notes).filter((id) => this.data.notes[id].visible)
+  }
+
+  // Keep 계정 이메일. state.json 에 저장되는 유일한 개인정보 — 마스터 토큰은
+  // 절대 여기 오지 않는다(OS 자격 증명 저장소에만 있다).
+  getEmail () {
+    return this.data.email || null
+  }
+
+  setEmail (email) {
+    this.data.email = email
   }
 }
 
