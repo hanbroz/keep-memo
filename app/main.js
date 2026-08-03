@@ -132,6 +132,16 @@ const unfreezeTimers = new Map() // noteId -> Timeout
 // 창은 noteWindows 에 남아 있으므로, 그냥 세면 방금 내린 메모가 목록 창에
 // 여전히 체크된 것으로 보인다.
 const closingNotes = new Set() // noteId
+// 이번 실행에서 Keep 휴지통으로 보낸 메모 id. 여기 들어온 id 로는 update_note 가
+// 더 이상 나가지 않는다.
+//
+// 왜 필요한가: trash 가 성공하면 곧바로 hideNote() 가 창을 닫고, 그 닫기 경로는
+// 렌더러에 마지막 flush 를 요청한다. 렌더러도 자기 저장 경로를 잠그지만(note.js
+// 의 trashCurrentNote), 잠그기 전에 이미 걸려 있던 요청이나 앞으로 생길 어떤
+// 경로가 하나라도 새면 방금 버린 메모로 저장이 날아가고, 그 실패분이
+// conflictBackup 에 남는다 — 존재하지 않는 메모의 본문이 state.json 에 남는
+// 것이다. 렌더러 하나만 믿지 않고 main 에서도 막는다.
+const trashedNotes = new Set() // noteId
 
 /** 지금 바탕화면에 실제로 올라가 있는 메모 id. 접힌 것은 포함, 닫는 중은 제외. */
 function desktopIds () {
@@ -473,6 +483,9 @@ function createNoteWindow (noteId) {
     // 접혀 있는 동안(그리고 막 펼친 직후)의 좌표는 책갈피의 것이지 메모의
     // 것이 아니다. 여기서 적으면 펼칠 자리를 잃는다.
     if (boundsFrozen.has(noteId)) return
+    // 휴지통으로 보낸 메모의 항목은 방금 지웠다. 창이 사라지는 동안 늦게 오는
+    // moved/resized 하나가 그 항목을 되살리면 안 된다.
+    if (trashedNotes.has(noteId)) return
     if (win.isDestroyed()) return
     const b = win.getBounds()
     store.setNote(noteId, { x: b.x, y: b.y, w: b.width, h: b.height })
@@ -622,7 +635,8 @@ function unfoldNote (noteId) {
 
 /**
  * 바탕화면에서만 내린다. Keep 메모는 손대지 않는다 — 이 함수에서 trash_note
- * 로 가는 길은 없고, 있어서도 안 된다. 삭제는 포스트잇 우클릭 → 확인 경로뿐이다.
+ * 로 가는 길은 없고, 있어서도 안 된다. 삭제는 포스트잇의 [삭제] 버튼과 우클릭,
+ * 둘 다 확인을 거쳐 notes:trash 하나로 들어가는 그 경로뿐이다.
  */
 function hideNote (id) {
   // 다시 체크해서 띄울 때는 펼친 포스트잇으로 돌아온다. 바탕화면에 없는
@@ -651,6 +665,27 @@ function broadcastFontSettings (settings) {
     if (!wc || wc.isDestroyed()) continue
     wc.send('settings:fonts', settings)
   }
+}
+
+/**
+ * Keep 쪽 노트 집합이 바뀌었음을 목록 창에 알린다. 지금은 휴지통으로 보낸
+ * 직후에만 부른다.
+ *
+ * 목록 창이 떠 있지 않은 경우가 정상이다 — 이 앱은 트레이에서 살고 목록 창은
+ * 사용자가 닫아둘 수 있다. 그때는 아무것도 하지 않는 것이 맞다: 다음에 목록
+ * 창을 열면 createListWindow 가 list.html 을 새로 띄우고, list.js 는 뜨자마자
+ * reload() 로 list_notes 를 다시 받는다. 즉 "열려 있으면 지금 갱신, 닫혀 있으면
+ * 다음에 열 때 갱신"이 되고, 어느 쪽이든 지운 메모는 목록에 없다.
+ *
+ * listWindow 는 창이 실제로 사라질 때 'closed' 에서 null 이 되지만, 그것만
+ * 믿지 않고 isDestroyed()/webContents 까지 확인한다 — broadcastFontSettings 와
+ * 같은 관례다.
+ */
+function notifyNotesChanged () {
+  if (!listWindow || listWindow.isDestroyed()) return
+  const wc = listWindow.webContents
+  if (!wc || wc.isDestroyed()) return
+  wc.send('notes:changed')
 }
 
 app.whenReady().then(async () => {
@@ -782,6 +817,12 @@ app.whenReady().then(async () => {
     if (!validated.ok) {
       return { ok: false, message: validated.message, code: 'BAD_REQUEST' }
     }
+    // 이미 휴지통으로 보낸 메모에는 아무것도 쓰지 않는다. 여기서 그냥 돌아가는
+    // 것이 핵심이다 — 아래 catch 로 떨어지면 store.setNote() 가 conflictBackup 을
+    // 다시 만들면서 방금 지운 메모의 항목을 state.json 에 되살린다.
+    if (trashedNotes.has(id)) {
+      return { ok: false, message: '휴지통으로 보낸 메모입니다.', code: 'NOTE_TRASHED' }
+    }
     // color 전용 patch(title 도 text 도 없음)에서는 보관할 미저장 "제목/본문"이
     // 애초에 없다 — selectColor() 는 편집기 내용을 건드리지 않는다. 그
     // 경우에만 conflictBackup 을 null 로 정규화한다(DEFAULT_NOTE_STATE.
@@ -816,14 +857,44 @@ app.whenReady().then(async () => {
     }
   })
 
+  // 지우기의 유일한 경로. 사이드카의 trash_note 는 node.trash() 를 부른다 —
+  // Keep 휴지통으로 보내는 것이고 7일간 복구할 수 있다. node.delete()(영구
+  // 삭제)로 가는 길은 이 앱 어디에도 없다.
+  //
+  // 렌더러의 [삭제] 버튼과 우클릭이 둘 다 이 핸들러 하나를 부른다. ✕(notes:close)
+  // 와 목록 창의 체크 해제(notes:applySelection)는 hideNote 만 부르고 여기 오지
+  // 않는다 — 그쪽은 바탕화면에서 내리기일 뿐이다.
   ipcMain.handle('notes:trash', async (_e, id) => {
     try {
       await sidecar.call('trash_note', { id })
     } catch (err) {
+      // 실패하면 아무것도 건드리지 않는다. 창도 그대로 남는다.
       return { ok: false, message: err.message, code: err.code }
     }
+    // 창을 닫기 **전에** 표시한다. hideNote() 안의 win.close() 가 렌더러에
+    // 마지막 flush 를 요청하고, 그 응답으로 오는 notes:update 는 위 가드에
+    // 걸려야 한다.
+    trashedNotes.add(id)
     hideNote(id)
+    // 지운 메모의 위치/크기/서체/보관본을 state.json 에서 통째로 지운다.
+    // hideNote() 가 방금 visible: false 로 항목을 남겨두고 갔으므로 반드시
+    // 그 뒤여야 한다.
+    store.forgetNote(id)
+    store.save()
+    // 목록 창이 떠 있으면 지금 갱신한다. 떠 있지 않으면 할 일이 없다 —
+    // 이유는 notifyNotesChanged 주석에 있다.
+    notifyNotesChanged()
     return { ok: true }
+  })
+
+  // 노트별 서체 재정의. Keep 에 서체 필드가 없어 이 값은 state.json 에만 있다.
+  // 검증과 기본값은 전부 store(=note-font.js)가 한다 — 여기서는 저장하고 실제로
+  // 저장된 값을 돌려줄 뿐이다(settings:setFonts 와 같은 관례다).
+  ipcMain.handle('notes:getFont', (_e, id) => store.getNoteFont(id))
+  ipcMain.handle('notes:setFont', (_e, id, raw) => {
+    const saved = store.setNoteFont(id, raw)
+    store.save()
+    return saved
   })
 
   if (!(await ensureAuth())) {

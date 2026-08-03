@@ -30,8 +30,22 @@ const status = document.getElementById('status')
 const badge = document.getElementById('badge')
 const bookmark = document.getElementById('bookmark')
 const bookmarkLabel = document.getElementById('bookmark-label')
-const colorToggle = document.getElementById('colorToggle')
+const lookToggle = document.getElementById('lookToggle')
+const lookPanel = document.getElementById('lookPanel')
 const colorPicker = document.getElementById('colorPicker')
+const deleteButton = document.getElementById('delete')
+const fontFamilyEl = document.getElementById('note-font-family')
+const fontTitleEl = document.getElementById('note-font-title-size')
+const fontBodyEl = document.getElementById('note-font-body-size')
+
+// 목록 창 [설정] 의 공통 서체. main 이 알려주고, 바뀔 때마다 다시 온다.
+let globalFont = DEFAULT_FONT_SETTINGS
+// 이 메모만의 재정의. null 이면 재정의 없음 = 공통 설정을 그대로 따른다.
+// **공통 값을 복사해 두지 않는 것이 핵심이다** — 복사해 두면 공통 설정을
+// 바꿨을 때 이 노트만 옛 값에 얼어붙는다. 합치는 규칙은 note-font.js 에 있다.
+let noteFontOverride = null
+// 휴지통 요청이 이미 하나 나가 있는가. 확인 대화상자를 두 번 띄우지 않는다.
+let trashing = false
 
 // Keep 이 실제로 지원하는 12색. 이름은 gkeepapi.node.ColorValue 의 멤버
 // 이름과 정확히 같아야 한다 — 그래야 body.dataset.color 를 통해 note.html 의
@@ -113,9 +127,9 @@ function applyFoldUI () {
   document.body.classList.toggle('folded', folded)
   if (folded) {
     renderBookmark()
-    // 접히면 #colorPicker 는 CSS 로도 숨지만, 열어둔 채로 접었다가 다시
+    // 접히면 #lookPanel 은 CSS 로도 숨지만, 열어둔 채로 접었다가 다시
     // 펼치면 패널이 열린 채로 돌아오는 것도 어색하다. 접는 순간 닫는다.
-    colorPicker.classList.remove('show')
+    lookPanel.classList.remove('show')
   }
 }
 
@@ -132,9 +146,19 @@ function buildColorPicker () {
     swatch.dataset.color = name
     swatch.title = label
     swatch.setAttribute('aria-label', label)
+    // 색 저장은 update_note 경로다. 본문을 아직(또는 영영) 못 받은 상태에서는
+    // 열리면 안 된다 — selectColor 도 !loaded 면 돌아가지만, 눌리는데 아무 일도
+    // 안 일어나는 것보다 눌리지 않는 편이 정직하다. 같은 패널의 서체는 Keep 을
+    // 거치지 않으므로 이 잠금과 무관하게 계속 쓸 수 있다.
+    swatch.disabled = true
     swatch.addEventListener('click', () => selectColor(name))
     colorPicker.append(swatch)
   }
+}
+
+/** 12개 스와치를 한꺼번에 열거나 잠근다. */
+function setSwatchesEnabled (enabled) {
+  for (const swatch of colorPicker.children) swatch.disabled = !enabled
 }
 
 /** 지금 노트의 색과 같은 이름의 스와치에 표시를 두른다. */
@@ -162,7 +186,9 @@ function markCurrentColor () {
 async function selectColor (name) {
   if (!loaded || colorSaving) return
   colorSaving = true
-  colorPicker.classList.remove('show')
+  // 예전에는 여기서 패널을 닫았다. 지금 이 패널에는 색 말고 서체도 들어 있어서
+  // 색 하나 골랐다고 닫아 버리면 서체를 이어서 손보려던 사용자가 매번 다시
+  // 열어야 한다. 고른 색은 패널 바깥의 노트 배경과 스와치의 표시로 이미 보인다.
 
   const previousColor = document.body.dataset.color
   document.body.dataset.color = name
@@ -187,6 +213,95 @@ async function selectColor (name) {
   status.textContent = '저장됨'
   colorSaving = false
 }
+
+// --- 이 메모만의 서체 ------------------------------------------------------
+//
+// Keep 에는 서체 필드가 없다. 그래서 이 값은 Keep 이 아니라 state.json 의 이
+// 노트 항목 안에 산다(x/y/w/h/visible/folded/conflictBackup 옆). update_note 로
+// 나가지 않으므로 저장 실패도 충돌도 없고, 불러오기(loaded)와도 무관하다 —
+// 메모 본문을 못 받아온 창에서도 서체는 고칠 수 있다.
+
+/** 공통 설정 + 이 노트의 재정의를 합쳐 화면에 입힌다. */
+function applyNoteFont () {
+  applyFontSettings(resolveNoteFont(globalFont, noteFontOverride))
+}
+
+/**
+ * 입력칸 셋을 지금 상태로 맞춘다.
+ *
+ * **빈 칸이 곧 "공통 설정 따름"이다.** 그래서 재정의가 없는 항목에는 값을 넣지
+ * 않고, 대신 placeholder 로 공통 값이 몇인지 보여준다. 여기에 공통 값을 실제
+ * value 로 채워 넣으면 사용자가 아무것도 안 했는데도 change 한 번에 그 값이
+ * 재정의로 굳어 버린다 — 그러면 나중에 공통 설정을 바꿔도 이 노트만 안 따라온다.
+ */
+function showNoteFontInputs () {
+  const ov = noteFontOverride || {}
+  fontFamilyEl.value = ov.family === undefined ? '' : ov.family
+  fontTitleEl.value = ov.titlePt === undefined ? '' : String(ov.titlePt)
+  fontBodyEl.value = ov.bodyPt === undefined ? '' : String(ov.bodyPt)
+  fontTitleEl.placeholder = String(globalFont.titlePt)
+  fontBodyEl.placeholder = String(globalFont.bodyPt)
+}
+
+function readNoteFontInputs () {
+  // 빈 문자열은 note-font.js 에서 그대로 "재정의 아님"으로 떨어진다 — 글꼴은
+  // 표에 없는 key 라서, 크기는 숫자로 읽히지 않아서다.
+  return { family: fontFamilyEl.value, titlePt: fontTitleEl.value, bodyPt: fontBodyEl.value }
+}
+
+/**
+ * 고른 값을 화면에 입히고 저장한다. 목록 창의 saveFontSettings 와 같은 순서다:
+ * 먼저 입혀 반응을 즉시 보여주고, 저장 결과(=검증을 지난 값)가 오면 그것으로 한
+ * 번 더 맞춘다 — 999 를 넣었다면 입력칸도 조인 값으로 바뀌어야 한다.
+ */
+async function saveNoteFont (raw) {
+  // noteId 를 아직 모르면 저장할 곳이 없다. 이 창이 어느 메모인지 모르는 채로
+  // 쓰면 남의 메모 설정을 건드릴 수 있다.
+  if (!noteId) return
+  noteFontOverride = normalizeNoteFontOverride(raw)
+  applyNoteFont()
+  showNoteFontInputs()
+  const saved = await window.keepSticky.setNoteFont(noteId, noteFontOverride)
+  noteFontOverride = saved || null
+  applyNoteFont()
+  showNoteFontInputs()
+}
+
+/**
+ * 글꼴 <option> 과 크기 입력칸의 범위를 만든다. 목록 창과 같은 표(FONT_CHOICES)
+ * 와 같은 범위(FONT_PT_RANGE)를 쓴다 — 여기서 다시 적지 않는다.
+ *
+ * 맨 앞의 빈 값 항목이 "재정의 없음"이다. 이것이 곧 되돌리는 방법이기도 하다
+ * (아래 [공통 설정 따르기] 는 셋을 한 번에 되돌린다).
+ */
+function buildNoteFontChoices () {
+  const follow = document.createElement('option')
+  follow.value = ''
+  follow.textContent = '공통 설정 따름'
+  fontFamilyEl.append(follow)
+  for (const choice of FONT_CHOICES) {
+    const opt = document.createElement('option')
+    opt.value = choice.key
+    opt.textContent = choice.label
+    fontFamilyEl.append(opt)
+  }
+  for (const el of [fontTitleEl, fontBodyEl]) {
+    el.min = String(FONT_PT_RANGE.min)
+    el.max = String(FONT_PT_RANGE.max)
+  }
+}
+
+// 숫자 칸은 input 이 아니라 change(칸을 벗어나거나 Enter)에서 반영한다. 매
+// 글자마다 반영하면 "1" 을 친 순간 6 으로 조여져 "12" 를 칠 수가 없다.
+// (목록 창의 [설정] 과 같은 이유, 같은 방식이다.)
+fontFamilyEl.addEventListener('change', () => { saveNoteFont(readNoteFontInputs()).catch(() => {}) })
+fontTitleEl.addEventListener('change', () => { saveNoteFont(readNoteFontInputs()).catch(() => {}) })
+fontBodyEl.addEventListener('change', () => { saveNoteFont(readNoteFontInputs()).catch(() => {}) })
+document.getElementById('note-font-reset').addEventListener('click', () => {
+  // null 을 보내면 재정의가 통째로 지워진다 — 그 뒤로 이 노트는 공통 설정을
+  // 실시간으로 따른다.
+  saveNoteFont(null).catch(() => {})
+})
 
 function showLoadFailure (message) {
   // 배지를 재사용하되 문구는 다르다. 이건 충돌도 저장 실패도 아니고 "아직 아무
@@ -290,13 +405,21 @@ document.getElementById('fold').addEventListener('click', async () => {
 // state.json 에 들고 있으므로 렌더러는 요청만 한다.
 bookmark.addEventListener('click', () => window.keepSticky.unfoldNote(noteId))
 
-// 패널은 정적 UI 라 노트를 불러오기 전에 미리 만들어 둔다. 여는/닫는 것과
-// 실제로 고를 수 있는 것은 별개다 — colorToggle 은 불러오기 전까지 disabled
-// 로 막혀 있다(HTML 기본값. 아래 로딩 성공 경로에서 푼다).
+// 저장된 설정을 IPC 로 읽어오기 전에 기본값을 먼저 입힌다(목록 창과 같다).
+// note.html 의 :root 는 list.html / setup-email.html 과 같은 값을 유지해야
+// 하므로, "기본 서체로 첫 그림을 그리는 일"은 CSS 가 아니라 여기서 한다.
+applyNoteFont()
+
+// [모양] 패널은 정적 UI 라 노트를 불러오기 전에 미리 만들어 둔다. 여는/닫는
+// 것과 실제로 고를 수 있는 것은 별개다 — [모양] 버튼은 이 창이 어느 메모인지
+// 알기 전까지(noteId 를 받기 전까지) disabled 로 막혀 있고(HTML 기본값), 그
+// 안의 색 스와치는 본문을 불러오기 전까지 따로 더 막혀 있다.
 buildColorPicker()
-colorToggle.addEventListener('click', () => {
-  colorPicker.classList.toggle('show')
-  if (colorPicker.classList.contains('show')) markCurrentColor()
+buildNoteFontChoices()
+showNoteFontInputs()
+lookToggle.addEventListener('click', () => {
+  lookPanel.classList.toggle('show')
+  if (lookPanel.classList.contains('show')) markCurrentColor()
 })
 
 // 접힘 여부는 main 이 정하고 알려준다. 창이 뜬 직후에도 한 번 오므로 재시작
@@ -306,36 +429,97 @@ window.keepSticky.onFoldState((next) => {
   applyFoldUI()
 })
 
-document.addEventListener('contextmenu', async (e) => {
-  e.preventDefault()
-  // 접힌 책갈피 위에서는 휴지통 경로를 열지 않는다. 44px 짜리 띠 위의 우클릭은
-  // 빗나가기 쉽고, 그 끝에 있는 것이 되돌리기 어려운 동작이다. 지우려면 먼저
-  // 펼쳐서 어떤 메모인지 보게 한다.
+// 목록 창 [설정] 의 공통 서체. 저장된 값을 한 번 읽고, 그 뒤로는 바뀔 때마다
+// 통보로 받는다.
+//
+// **이 통보 하나가 "재정의 없는 노트는 공통 설정을 실시간으로 따른다"를
+// 만든다.** 여기서 하는 일은 globalFont 를 갈아 끼우고 다시 입히는 것뿐이고,
+// 재정의가 있는 항목은 resolveNoteFont 가 그대로 지켜준다 — 즉 글꼴만 재정의한
+// 노트에서 공통 본문 크기를 바꾸면 글꼴은 그대로 두고 크기만 따라온다.
+// placeholder 도 다시 그려 공통 값이 몇으로 바뀌었는지 보이게 한다.
+window.keepSticky.getFontSettings().then((settings) => {
+  globalFont = normalizeFontSettings(settings)
+  applyNoteFont()
+  showNoteFontInputs()
+}).catch(() => {})
+
+window.keepSticky.onFontSettings((settings) => {
+  globalFont = normalizeFontSettings(settings)
+  applyNoteFont()
+  showNoteFontInputs()
+})
+
+/** 편집과 색 변경(= update_note 로 나가는 모든 것)을 한꺼번에 잠그거나 연다. */
+function setEditingEnabled (enabled) {
+  loaded = enabled
+  title.readOnly = !enabled
+  body.readOnly = !enabled
+  setSwatchesEnabled(enabled)
+  deleteButton.disabled = !enabled
+}
+
+/**
+ * 이 메모를 Keep 휴지통으로 보내고(성공하면 main 이 창을 닫는다) 목록 창까지
+ * 갱신되게 한다.
+ *
+ * **상단 바의 [삭제] 와 우클릭이 둘 다 이 함수 하나만 부른다.** 두 벌로 나뉘면
+ * 한쪽만 고쳐지는 날이 온다.
+ *
+ * 지우기는 언제나 node.trash() 다 — Keep 휴지통으로 보내는 것이고 7일 안에
+ * 복구할 수 있다. node.delete()(영구 삭제)로 가는 길은 이 앱 어디에도 없다.
+ * ✕(closeNote)와 목록 창의 체크 해제는 이 함수를 부르지 않는다.
+ */
+async function trashCurrentNote () {
+  // 접힌 책갈피 위에서는 열지 않는다. 44px 짜리 띠 위의 우클릭은 빗나가기 쉽고,
+  // 그 끝에 있는 것이 되돌리기 어려운 동작이다. 지우려면 먼저 펼쳐서 어떤
+  // 메모인지 보게 한다. ([삭제] 버튼은 접히면 상단 바째로 숨는다.)
   if (folded) return
+  // 이미 한 번 보냈으면 대화상자를 또 띄우지 않는다.
+  if (trashing) return
+  // 불러오지 못한 메모는 지우지 않는다. 무엇을 지우는지 화면에 보이지 않는
+  // 상태이고, 목록에 없는 id 일 수도 있다(그 경우 이미 사라진 메모다).
+  if (!loaded) return
   // confirm() 이 렌더러의 유일한 JS 스레드를 막고 있는 동안 디바운스 타이머가
   // 기한을 넘기면, 스레드가 풀리는 순간(대화상자가 닫히자마자) 그 콜백이
   // trash_note 보다 먼저 또는 뒤에 끼어들어 update_note 와 trash_note 가
   // 순서 보장 없이 경합할 수 있다. close 핸들러처럼 여기서도 제일 먼저
   // 타이머를 끊는다.
   clearTimeout(timer)
-  if (!confirm('이 메모를 Keep 휴지통으로 보낼까요? 7일간 복구할 수 있습니다.')) return
+  if (!confirm('정말로 삭제하시겠습니까?\n\nKeep 휴지통으로 보냅니다. 7일 안에는 Keep 에서 복구할 수 있습니다.')) return
+
+  trashing = true
+  // 저장 경로를 **요청을 보내기 전에** 잠근다. 이 순서가 중요하다: trash 가
+  // 성공하면 main 이 곧바로 창을 닫는데, 그 닫기 경로가 렌더러에 마지막 flush
+  // 를 요청한다(notes:flush). 그 요청은 지금 이 await 가 풀리기 전에 도착한다 —
+  // 같은 IPC 파이프이고 main 이 먼저 보냈기 때문이다. 잠그는 것이 나중이면
+  // 방금 버린 메모로 update_note 가 한 번 날아가고, 그 실패분이 state.json 의
+  // conflictBackup 에 남는다. 존재하지 않는 메모의 본문이 디스크에 남는 셈이다.
+  // (main 에도 같은 것을 막는 가드가 하나 더 있다.)
+  //
+  // 미저장 편집은 일부러 저장하지 않는다. 지우려는 메모다.
+  setEditingEnabled(false)
+  lookPanel.classList.remove('show')
+
   status.textContent = '휴지통으로 보내는 중'
   const res = await window.keepSticky.trashNote(noteId)
   if (!res.ok) {
-    // 실패하면 main 프로세스가 창을 닫지 않으므로 메모와 창은 그대로다.
-    // 사용자가 "휴지통으로 보냈다"고 착각한 채 창을 닫지 않도록 알린다.
+    // 실패하면 main 프로세스가 창을 닫지 않으므로 메모와 창은 그대로다. 잠갔던
+    // 편집을 되돌려 놓는다 — 안 그러면 사용자가 아무것도 못 하는 창에 갇힌다.
+    // 사용자가 "휴지통으로 보냈다"고 착각하지 않도록 이유도 알린다.
+    setEditingEnabled(true)
+    trashing = false
     status.textContent = res.code === 'AUTH_REQUIRED' ? '재로그인 필요' : '휴지통 이동 실패'
     return
   }
-  // 휴지통으로 보냈으면 이 창의 저장 경로를 닫는다. main 이 곧 창을 닫는데,
-  // 그 닫기 경로가 마지막 flush 를 요청하므로 열어두면 방금 버린 메모에
-  // update_note 가 날아간다. 색상 변경도 같은 update_note 경로를 타므로
-  // 똑같이 잠근다.
-  loaded = false
-  title.readOnly = true
-  body.readOnly = true
-  colorToggle.disabled = true
-  colorPicker.classList.remove('show')
+  // 여기서부터는 main 이 창을 닫는다. 잠금은 그대로 둔다.
+  status.textContent = '휴지통으로 보냈습니다'
+}
+
+deleteButton.addEventListener('click', () => { trashCurrentNote() })
+document.addEventListener('contextmenu', (e) => {
+  e.preventDefault()
+  // 위 [삭제] 버튼과 똑같은 경로다. 여기에 두 번째 구현을 두지 않는다.
+  trashCurrentNote()
 })
 
 // 메인 프로세스가 창을 닫기 직전에 부른다 (Alt+F4·종료 등 ✕ 를 거치지 않는
@@ -355,6 +539,16 @@ window.keepSticky.noteId().then(async (id) => {
   // 창을 내릴 수는 있어야 한다. 저장 경로를 여는 것은 이 id 가 아니라 아래의
   // loaded / readOnly 다.
   noteId = id
+  // 서체 재정의는 state.json 에만 있고 Keep 을 거치지 않는다. 그래서 아래
+  // list_notes 를 기다리지 않고 따로 읽어 곧바로 입힌다 — 불러오기가 실패해
+  // 편집이 잠긴 창에서도 글자 크기는 고칠 수 있어야 한다. 그래서 await 로
+  // 묶지 않는다(묶으면 이 왕복만큼 본문 표시가 늦어진다).
+  lookToggle.disabled = false
+  window.keepSticky.getNoteFont(id).then((override) => {
+    noteFontOverride = override || null
+    applyNoteFont()
+    showNoteFontInputs()
+  }).catch(() => {})
   status.textContent = '불러오는 중'
   const { notes } = await window.keepSticky.listNotes()
   const note = notes.find((n) => n.id === id)
@@ -371,10 +565,9 @@ window.keepSticky.noteId().then(async (id) => {
   if (note.color) document.body.dataset.color = note.color
   markCurrentColor()
   bookmarkText = currentBookmarkText()
-  loaded = true
-  title.readOnly = false // 여기가 편집이 열리는 유일한 지점이다
-  body.readOnly = false
-  colorToggle.disabled = false // 색 변경도 불러오기가 끝나야 열리는 경로다
+  // 여기가 편집이 열리는 유일한 지점이다. 색 변경([모양] 패널의 스와치)과
+  // [삭제] 도 같이 열린다 — 둘 다 "이 메모를 실제로 받아왔다"를 전제로 한다.
+  setEditingEnabled(true)
   status.textContent = ''
   // 접힘 통보가 불러오기보다 먼저 왔을 수 있다(재시작 복원). 이제 제목을
   // 알았으니 책갈피 글자를 제대로 다시 그린다.

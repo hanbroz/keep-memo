@@ -7,6 +7,9 @@ contextBridge.exposeInMainWorld('keepSticky', {
   listNotes: () => ipcRenderer.invoke('notes:list'),
   createNote: (title, text) => ipcRenderer.invoke('notes:create', title, text),
   updateNote: (id, patch) => ipcRenderer.invoke('notes:update', id, patch),
+  // 지우기. Keep 휴지통으로 보내는 것이고 7일간 복구할 수 있다(사이드카의
+  // node.trash()). 포스트잇의 [삭제] 버튼과 우클릭이 둘 다 확인 뒤에 이것 하나를
+  // 부른다 — ✕(closeNote)와 목록 창의 체크 해제는 여기 오지 않는다.
   trashNote: (id) => ipcRenderer.invoke('notes:trash', id),
   openNote: (id) => ipcRenderer.invoke('notes:open', id),
   closeNote: (id) => ipcRenderer.invoke('notes:close', id),
@@ -42,5 +45,15 @@ contextBridge.exposeInMainWorld('keepSticky', {
   setFontSettings: (settings) => ipcRenderer.invoke('settings:setFonts', settings),
   // 한 창에서 바꾼 설정이 다시 뜨지 않고도 모든 창에 반영되게 하는 통로.
   // 이벤트 객체는 넘기지 않는다(onFoldState / onFlushRequest 와 같은 관례).
-  onFontSettings: (cb) => ipcRenderer.on('settings:fonts', (_e, settings) => cb(settings))
+  onFontSettings: (cb) => ipcRenderer.on('settings:fonts', (_e, settings) => cb(settings)),
+  // 노트 한 장만의 서체 재정의(포스트잇 전용). Keep 에는 서체 필드가 없어서
+  // 이 값은 state.json 의 그 노트 항목 안에만 산다. 저장은 언제나 main 이 하고
+  // (store.js 가 note-font.js 로 검증한다), setNoteFont 는 실제로 저장된 값을
+  // 돌려준다 — 재정의가 하나도 없으면 null 이다.
+  getNoteFont: (id) => ipcRenderer.invoke('notes:getFont', id),
+  setNoteFont: (id, override) => ipcRenderer.invoke('notes:setFont', id, override),
+  // 목록 창 전용. Keep 쪽 노트 집합이 바뀌었으니 다시 불러오라는 신호다(지금은
+  // 포스트잇을 휴지통으로 보냈을 때만 온다). 내용은 싣지 않는다 — 무엇이
+  // 바뀌었는지는 목록 창이 list_notes 로 직접 다시 읽는 편이 정확하다.
+  onNotesChanged: (cb) => ipcRenderer.on('notes:changed', () => cb())
 })
