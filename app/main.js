@@ -16,6 +16,47 @@ const { reconcileSelection } = require('./selection-reconcile')
 const { trayMenuTemplate, TRAY_TOOLTIP } = require('./tray-menu')
 const { TRAY_ICON_DATA_URL } = require('./tray-icon')
 
+// --- 다중 실행 방지 -------------------------------------------------------
+//
+// 반드시 파일에서 가장 먼저 하는 일이어야 한다 — whenReady() 보다도, 이메일
+// 설정 창보다도, ensureAuth() 보다도, startSidecar() 보다도 앞서야 한다.
+// 두 번째 인스턴스가 사이드카를 하나라도 더 띄우면 마스터 토큰으로 다시
+// 인증하고 동기화하는 파이썬 자식이 하나 더 생기고, 두 프로세스가 같은
+// %TEMP% 압축해제본과 같은 state.json 을 동시에 건드리게 된다 — 트레이
+// 아이콘이 두 개로 늘고 창 하나가 자기 HTML 을 텍스트로 그리던, 이 수정이
+// 고치려는 바로 그 증상의 원인이다.
+//
+// 잠금을 얻지 못했다는 것은 이미 다른 인스턴스가 실행 중이라는 뜻이다. 이
+// 프로세스는 창도 트레이도 사이드카도 만들지 않고 즉시 끝나야 한다.
+//
+// app.quit() 을 여기서 부르고 곧장 return 하는 것이 핵심이다. 아래의
+// app.whenReady() 도, before-quit / will-quit / window-all-closed /
+// session-end 리스너도 이 지점 이후에 등록되므로, 잠금에 실패한 이
+// 프로세스에서는 그 리스너들이 아예 등록되지 않는다. 특히 before-quit
+// 핸들러(맨 아래, quitTeardownStarted 로 재진입을 막고 flushAllNotes() →
+// stopSidecar() → app.quit() 순으로 도는 그 핸들러)는 리스너 목록에 없으므로
+// 이 app.quit() 을 가로채 preventDefault() 를 부르거나 무언가를 기다리게
+// 만들 여지가 물리적으로 없다 — Node 의 EventEmitter 는 등록된 리스너만
+// 부르고, 이 프로세스는 그 리스너를 등록하는 코드에 도달하기 전에 끝난다.
+// 그래서 정지할 것도, 지연될 것도 없이 즉시 종료한다. (CommonJS 모듈은
+// Node 가 함수로 감싸 실행하므로 최상위 return 이 유효한 문법이다.) 이 순서는
+// Electron 공식 문서가 app.requestSingleInstanceLock() 예제로 보여주는 것과
+// 같다.
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+  app.quit()
+  return
+}
+
+// 두 번째 인스턴스를 실행하려는 시도가 있으면(=방금 위에서 잠금에 실패한
+// 프로세스가 있으면) 이 인스턴스로 알림이 온다. openOrFocusList() 는 트레이
+// 클릭과 같은 진입점이다 — "앱을 또 실행했다"도 "트레이를 눌렀다"도 결국
+// "보여 달라"는 같은 요청이고, 시작이 아직 끝나지 않은 동안(설정/로그인
+// 창이 떠 있는 동안)의 폴백까지 이미 그 함수가 처리한다.
+app.on('second-instance', () => {
+  openOrFocusList()
+})
+
 const PRELOAD = path.join(__dirname, 'preload.js')
 // 창을 닫기 전에 렌더러의 마지막 저장을 기다려 주는 시간. 응답 없는(혹은
 // 이미 사라진) 렌더러 하나 때문에 종료가 막히면 안 되므로 반드시 유한하다.
@@ -225,12 +266,14 @@ function createListWindow () {
 }
 
 /**
- * 트레이에서 목록 창을 여는 유일한 진입점.
+ * 트레이 클릭과 두 번째 인스턴스 실행, 둘 다에서 목록 창을 여는 유일한
+ * 진입점.
  *
  * 시작이 끝나기 전에는 목록 창을 만들지 않는다. 그 시점에는 notes:list 같은
  * IPC 핸들러가 아직 없어서, 만들어봐야 아무것도 못 불러오는 빈 창이 뜬다.
  * 대신 지금 떠 있는 창(최초 실행 설정 창이나 로그인 창)을 앞으로 가져온다 —
- * 사용자가 트레이를 누른 이유는 결국 "앱을 보여 달라"이기 때문이다.
+ * 사용자가 트레이를 누르든 exe 를 한 번 더 누르든, 이유는 결국 "앱을 보여
+ * 달라"이기 때문이다.
  */
 function openOrFocusList () {
   if (!startupComplete) {
@@ -654,6 +697,13 @@ app.on('window-all-closed', () => {
 // app.quit() 경로. 여기서 곧장 사이드카를 죽이면 안 된다 — before-quit 은 창이
 // 닫히기 '전에' 오고, 창 닫기 경로(win.on('close'))가 마지막 저장을 사이드카로
 // 보내기 때문이다. 먼저 막고, 모든 포스트잇의 저장을 끝낸 뒤, 그때 정리한다.
+//
+// 다중 실행 잠금에 실패해 곧장 app.quit() 하고 return 하는 경로(파일 맨 위)는
+// 이 리스너 자체가 등록되기 전에 끝나므로 여기 들어올 일이 없다. 혹시 나중에
+// 코드가 재배치되어 그 경로가 이 리스너보다 먼저 등록되더라도, noteWindows 와
+// sidecar 가 둘 다 비어 있는 상태에서 부르는 것이므로 아래 flushAllNotes() 는
+// 즉시 끝나고 stopSidecar() 는 아무 일도 하지 않는다 — 멈추거나 기다릴 것이
+// 없다.
 app.on('before-quit', (e) => {
   if (quitTeardownStarted) return // 두 번째 진입 — 이번엔 진짜 종료한다
   quitTeardownStarted = true
