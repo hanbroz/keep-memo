@@ -1,5 +1,6 @@
 'use strict'
 const path = require('node:path')
+const fs = require('node:fs')
 const electron = require('electron')
 const { app, BrowserWindow, ipcMain, session, dialog, Tray, Menu, nativeImage, shell } = electron
 // screen 모듈은 app 의 ready 이후에만 쓸 수 있다. 위에서 같이 구조 분해하면
@@ -21,7 +22,12 @@ const { validateNotePatch, validateChecklistPatch } = require('./note-patch')
 const { sanitizeUrl } = require('./renderer/url-open')
 const { trayMenuTemplate, TRAY_TOOLTIP } = require('./tray-menu')
 const { TRAY_ICON_DATA_URL } = require('./tray-icon')
-const { extractIncomingVersion, describeVersionMismatch } = require('./version-notice')
+const {
+  extractIncomingVersion,
+  describeVersionMismatch,
+  decideQuitAction,
+  describeQuitAction
+} = require('./version-notice')
 
 // --- 다중 실행 방지 -------------------------------------------------------
 //
@@ -55,7 +61,22 @@ const { extractIncomingVersion, describeVersionMismatch } = require('./version-n
 // 시점(지금 여기)에도 안전하다 — Electron 공식 타입 선언(electron.d.ts)에서도
 // getSystemLocale() 같은 다른 메서드에는 "이 API 는 ready 이후에만 호출 가능"
 // 이라는 주석이 붙어 있는데 getVersion() 에는 그런 제약이 없다.
-const gotSingleInstanceLock = app.requestSingleInstanceLock({ version: app.getVersion() })
+//
+// execPath 도 함께 건다 — 잠금을 이미 쥔(먼저 실행 중인) 인스턴스가 나중에
+// "종료하고 새 버전을 실행"하려면, 지금 이 프로세스가 실제로 어떤 exe 였는지를
+// 알아야 하기 때문이다. 이 프로세스는 잠금 획득에 실패하면 바로 아래에서 죽으므로
+// (그리고 죽은 뒤에는 아무것도 못 하므로) 그 정보를 알릴 수 있는 유일한 시점이
+// 지금이다. process.env.PORTABLE_EXECUTABLE_FILE 은 electron-builder 의 portable
+// 타겟(app-builder-lib/templates/nsis/portable.nsi)이 압축을 풀기 전에 원본
+// exe 경로($EXEPATH, = 사용자가 두 번 클릭한 KeepSticky-*.exe)로 설정해 두는
+// 환경 변수다 — process.execPath(=%TEMP% 밑 압축 해제본)와 다르다. 포터블
+// 빌드가 아닌 실행(예: npm start)에는 이 환경 변수가 없으므로 null 을 보낸다 —
+// version-notice.js 의 extractRelaunchExecPath 가 그 경우를 "재실행 불가"로
+// 다룬다.
+const gotSingleInstanceLock = app.requestSingleInstanceLock({
+  version: app.getVersion(),
+  execPath: process.env.PORTABLE_EXECUTABLE_FILE || null
+})
 if (!gotSingleInstanceLock) {
   app.quit()
   return
@@ -81,6 +102,12 @@ if (!gotSingleInstanceLock) {
 // "같은가/다른가"와 "다르면 뭐라고 보여줄 것인가"의 판단 자체는 Electron 없이
 // 테스트 가능한 순수 함수(version-notice.js)에 있다. 여기서는 additionalData
 // 를 건네고 결과에 따라 분기만 한다.
+//
+// decideQuitAction 도 여기서 미리 정해 둔다(다이얼로그를 띄우기 전에) — 사용자가
+// 버튼을 누른 뒤가 아니라 누르기 전에 "누르면 무슨 일이 일어나는지"를 다이얼로그
+// 문구에 반영해야 하기 때문이다(아래 showVersionMismatchDialog). fs.existsSync
+// 를 여기서 넘기는 것이 이 프로세스에서 유일하게 파일시스템에 접근하는 지점이다 —
+// version-notice.js 는 여전히 fs 를 모른다.
 app.on('second-instance', (_event, _argv, _workingDirectory, additionalData) => {
   const incomingVersion = extractIncomingVersion(additionalData)
   const result = describeVersionMismatch(app.getVersion(), incomingVersion)
@@ -88,7 +115,8 @@ app.on('second-instance', (_event, _argv, _workingDirectory, additionalData) => 
     openOrFocusList()
     return
   }
-  showVersionMismatchDialog(result)
+  const quitAction = decideQuitAction(additionalData, fs.existsSync)
+  showVersionMismatchDialog(result, quitAction)
 })
 
 const PRELOAD = path.join(__dirname, 'preload.js')
@@ -335,7 +363,8 @@ function openOrFocusList () {
  * 두 번째 인스턴스가 실행됐는데 버전이 다를 때(또는 상대 버전을 모를 때) 뜨는
  * 다이얼로그. 무엇을 보여줄지(message/detail)는 version-notice.js 의 순수
  * 함수가 이미 정해서 넘겨준다 — 여기서는 그것을 그대로 띄우고 사용자의 선택에
- * 따른 동작만 담당한다.
+ * 따른 동작만 담당한다. 버튼 라벨과 detail 뒤에 붙는 안내 문장은 quitAction
+ * (decideQuitAction 의 결과)에 따라 달라진다 — describeQuitAction 이 정한다.
  *
  * 특정 창에 매달지 않는다 — dialog.showMessageBox 에 BrowserWindow 를 넘기지
  * 않는다. listWindow 는 사용자가 이미 닫아뒀을 수 있고(트레이에만 남아 있는
@@ -348,26 +377,38 @@ function openOrFocusList () {
  * 항상 안전하다.
  *
  * @param {{ message: string, detail: string }} notice - describeVersionMismatch() 의 결과(matches: false 인 경우)
+ * @param {{ action: 'relaunch', execPath: string } | { action: 'quit-notice' }} quitAction - decideQuitAction() 의 결과
  */
-function showVersionMismatchDialog ({ message, detail }) {
+function showVersionMismatchDialog ({ message, detail }, quitAction) {
   app.focus({ steal: true })
+  const { buttonLabel, callToAction } = describeQuitAction(quitAction)
   dialog.showMessageBox({
     type: 'warning',
     title: 'Keep Sticky 버전이 다릅니다',
     message,
-    detail,
-    buttons: ['실행 중인 것 종료하기', '취소'],
+    detail: `${detail}\n\n${callToAction}`,
+    buttons: [buttonLabel, '취소'],
     // Enter(defaultId)나 Esc(cancelId)를 무심코 눌렀을 때 실행 중이던 것이
     // 종료되면 안 된다 — 둘 다 안전한 쪽인 [취소](인덱스 1)를 가리킨다.
     defaultId: 1,
     cancelId: 1,
     noLink: true
   }).then((result) => {
+    if (result.response !== 0) return // [취소] — 아무 일도 하지 않는다
+    // app.relaunch() 는 "종료되면 이 exe 를 다시 띄워라"는 예약일 뿐, 그
+    // 자체로는 아무것도 안 죽이지도 새로 띄우지도 않는다(Electron 문서: "이
+    // 메서드는 실행 시 앱을 종료하지 않는다 — app.relaunch() 뒤에 app.quit()
+    // 이나 app.exit() 을 불러야 실제로 재시작된다"). 그래서 이 예약은 반드시
+    // app.quit() 보다 먼저 걸어 둬야 하고, 실제 종료 절차(미저장 편집 flush →
+    // 사이드카 정리)는 아래 app.quit() 이 그대로 트리거하는 before-quit 이
+    // 맡는다 — relaunch 예약이 그 절차를 건너뛰게 하지 않는다.
+    if (quitAction.action === 'relaunch') {
+      app.relaunch({ execPath: quitAction.execPath })
+    }
     // 트레이 [종료]와 똑같은 경로: app.quit() 뿐이다. before-quit 의
     // flushAllNotes() → stopSidecar() → app.quit() 재진입이 그대로 실행되므로,
-    // 지금 열려 있는 포스트잇의 미저장 편집도 이 경로를 거쳐 저장된다. 사용자가
-    // 다시 실행하는 것은 이 함수의 책임이 아니다 — 지시문대로 "종료만" 한다.
-    if (result.response === 0) app.quit()
+    // 지금 열려 있는 포스트잇의 미저장 편집도 이 경로를 거쳐 저장된다.
+    app.quit()
   }).catch((err) => {
     // showMessageBox 가 거절되는 경우는 문서화돼 있지 않지만, 혹시라도 거절되면
     // 조용히 삼킨다 — 여기서 예외가 새어나가 앱을 죽이는 것보다 "사용자가 응답
