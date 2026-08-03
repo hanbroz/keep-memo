@@ -13,6 +13,7 @@ const { resolveSidecarCommand } = require('./sidecar-path')
 const { validateEmail } = require('./email-validate')
 const { bookmarkBounds, BOOKMARK } = require('./bookmark-layout')
 const { reconcileSelection } = require('./selection-reconcile')
+const { validateNotePatch } = require('./note-patch')
 const { trayMenuTemplate, TRAY_TOOLTIP } = require('./tray-menu')
 const { TRAY_ICON_DATA_URL } = require('./tray-icon')
 
@@ -624,8 +625,18 @@ app.whenReady().then(async () => {
   ipcMain.handle('notes:unfold', (_e, id) => ({ ok: unfoldNote(id) }))
 
   ipcMain.handle('notes:update', async (_e, id, patch) => {
+    // 예전에는 여기서 { id, text: patch.text } 만 만들어 보냈다 — preload 는
+    // updateNote(id, patch) 로 임의의 필드를 받는다고 광고하고 사이드카는
+    // title 을(그리고 이제 color 도) 받는데, 여기서 text 말고는 전부 조용히
+    // 버려졌다. patch 를 통째로 신뢰해 그대로 흘리는 대신, 지원하는 필드만
+    // 화이트리스트로 골라 보낸다 — 모르는 필드가 섞여 있으면 일부만 저장하고
+    // 나머지를 조용히 버리는 대신 통째로 거절한다.
+    const validated = validateNotePatch(patch)
+    if (!validated.ok) {
+      return { ok: false, message: validated.message, code: 'BAD_REQUEST' }
+    }
     try {
-      const res = await sidecar.call('update_note', { id, text: patch.text })
+      const res = await sidecar.call('update_note', { id, ...validated.params })
       // 성공한 저장은 앞선 실패/충돌의 보관본을 무효로 만든다. 지우지 않으면
       // 노트 본문이 %APPDATA% 의 state.json 에 무기한 남는데, 이걸 보거나
       // 지우는 UI 는 Phase 2 라서 사용자는 존재조차 모른다.
@@ -638,7 +649,10 @@ app.whenReady().then(async () => {
       // 여기서 잡아 shape 로 돌려준다 — auth:exchange 와 같은 관례다.
       // 저장 자체가 실패했으므로 이 편집은 서버에 도달하지 못했다. 충돌과
       // 같은 방식으로 conflictBackup 에 보관해 ✕ 를 눌러도 사라지지 않게 한다.
-      store.setNote(id, { conflictBackup: patch.text })
+      // color 전용 patch(text 없음)에서는 validated.params.text 가 undefined다.
+      // 보관할 미저장 본문이 애초에 없었다는 뜻이므로 null 로 정규화한다 —
+      // DEFAULT_NOTE_STATE.conflictBackup 도 null 이 "보관본 없음"의 표현이다.
+      store.setNote(id, { conflictBackup: validated.params.text ?? null })
       store.save()
       return { ok: false, message: err.message, code: err.code }
     }

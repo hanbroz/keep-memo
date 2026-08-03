@@ -40,6 +40,10 @@ class NotFound(Exception):
     """요청한 노트가 없다."""
 
 
+class BadRequest(Exception):
+    """요청 자체가 잘못됐다. 예: Keep 팔레트에 없는 색 이름."""
+
+
 def _serialize(node) -> dict:
     """Keep 노드를 RPC 로 넘길 수 있는 평평한 dict 로 변환한다.
 
@@ -99,15 +103,30 @@ class KeepService:
         keep.sync()
         return {"note": _serialize(node)}
 
-    def update_note(self, id: str, title=None, text=None) -> dict:  # noqa: A002
+    def update_note(self, id: str, title=None, text=None, color=None) -> dict:  # noqa: A002
         keep = self._require_keep()
         node = keep.get(id)
         if node is None:
             raise NotFound(id)
+
+        # 색은 자유 텍스트가 아니라 Keep 이 실제로 지원하는 12개 이름 중 하나다.
+        # gkeepapi.node.ColorValue 의 멤버 이름과 대조하는 것 자체가 그 12개
+        # 화이트리스트다 — 렌더러가 뭘 보내든 여기서 걸러진다. 노드를 건드리기
+        # 전에 검증해, 색만 잘못됐을 뿐인 요청이 title/text 를 반쯤 적용한 채
+        # 남기지 않게 한다.
+        color_value = None
+        if color is not None:
+            try:
+                color_value = gkeepapi.node.ColorValue[color]
+            except KeyError:
+                raise BadRequest(f"알 수 없는 색 이름: {color}")
+
         if title is not None:
             node.title = title
         if text is not None:
             node.text = text
+        if color_value is not None:
+            node.color = color_value
         sent_text = node.text or ""
 
         keep.sync()
@@ -175,6 +194,8 @@ def handle(service: KeepService, line: str) -> dict:
         return {"id": rid, "error": {"code": "AUTH_REQUIRED", "message": str(exc)}}
     except NotFound as exc:
         return {"id": rid, "error": {"code": "NOT_FOUND", "message": str(exc)}}
+    except BadRequest as exc:
+        return {"id": rid, "error": {"code": "BAD_REQUEST", "message": str(exc)}}
     except TypeError as exc:
         return {"id": rid, "error": {"code": "BAD_REQUEST", "message": str(exc)}}
     except Exception as exc:

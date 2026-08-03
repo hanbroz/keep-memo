@@ -224,6 +224,48 @@ def test_update_title_only_detects_conflict_when_server_overrides(account):
     assert res["note"]["text"] == "폰에서 고친 내용"
 
 
+@pytest.mark.parametrize("name", [
+    "White", "Red", "Orange", "Yellow", "Green", "Teal",
+    "Blue", "DarkBlue", "Purple", "Pink", "Brown", "Gray",
+])
+def test_update_color_accepts_each_of_the_twelve_names(account, name):
+    """Keep 팔레트의 12개 이름 전부가 받아들여지고, 그대로 왕복해야 한다."""
+    created = _call(account, "create_note", title="t", text="본문")["result"]["note"]
+    res = _call(account, "update_note", id=created["id"], color=name)["result"]
+    assert res["note"]["color"] == name
+    assert res["conflict"] is False
+
+
+def test_update_color_unknown_name_is_bad_request(account):
+    """Keep 팔레트에 없는 이름은 BAD_REQUEST 여야 한다 — 조용히 무시하거나
+    죽어서도 안 된다."""
+    created = _call(account, "create_note", title="t", text="본문")["result"]["note"]
+    res = _call(account, "update_note", id=created["id"], color="Rainbow")
+    assert res["error"]["code"] == "BAD_REQUEST"
+    # 색이 잘못됐으니 노드는 손대지 않은 채로 남아야 한다.
+    notes = _call(account, "list_notes")["result"]["notes"]
+    assert notes[0]["color"] == "Yellow"
+
+
+def test_update_color_only_leaves_text_untouched_and_reports_no_conflict(account):
+    """색만 바꾸는 요청은 text=None 으로 들어온다. sentText 는 유지된 본문으로
+    떨어져야 하고(title-only 테스트와 같은 모양), 충돌로 오탐하면 안 된다."""
+    created = _call(account, "create_note", title="t", text="유지될 본문")["result"]["note"]
+    res = _call(account, "update_note", id=created["id"], color="Blue")["result"]
+    assert res["note"]["text"] == "유지될 본문"
+    assert res["note"]["color"] == "Blue"
+    assert res["conflict"] is False
+    assert res["sentText"] == "유지될 본문"
+
+
+def test_update_text_and_color_together_applies_both(account):
+    created = _call(account, "create_note", title="t", text="원본")["result"]["note"]
+    res = _call(account, "update_note", id=created["id"], text="수정본", color="Green")["result"]
+    assert res["note"]["text"] == "수정본"
+    assert res["note"]["color"] == "Green"
+    assert res["conflict"] is False
+
+
 def test_serve_survives_cp949_stdout_with_emoji_note(account):
     """한국어 Windows 의 기본 콘솔 코드페이지는 cp949 이고, 이모지처럼 BMP 밖
     문자는 표현하지 못한다. 실사용자가 겪은 크래시: 노트 본문에 이모지가 있으면

@@ -17,6 +17,12 @@
       --lh-tight: 1.35;
       --ink: rgba(0, 0, 0, 0.86);
       --ink-dim: rgba(0, 0, 0, 0.5);
+
+      /* Keep 팔레트 12색. body 배경과 색상 피커의 스와치가 이 값을 함께 쓴다 —
+         숫자를 두 곳에 따로 적으면 언젠가 어긋난다. */
+      --c-white: #ffffff;   --c-red: #f6c8c2;    --c-orange: #fbd9a4; --c-yellow: #fdf6a9;
+      --c-green: #dbeeb4;   --c-teal: #bfe8e0;    --c-blue: #c8e3f6;   --c-darkblue: #c6cbe9;
+      --c-purple: #ddc9e9;  --c-pink: #f6cfe0;    --c-brown: #e4d3c1;  --c-gray: #e4e6e8;
     }
 
     html, body { margin: 0; height: 100%; }
@@ -35,18 +41,18 @@
        note.js 가 body.dataset.color 에 심는다 — 속성 값이므로 innerHTML 경로가
        아니고, 모르는 값이면 어느 규칙에도 걸리지 않아 위 기본값이 남는다.
        접힌 책갈피는 이 배경을 그대로 물려받는다. */
-    body[data-color="White"]    { background: #ffffff; }
-    body[data-color="Red"]      { background: #f6c8c2; }
-    body[data-color="Orange"]   { background: #fbd9a4; }
-    body[data-color="Yellow"]   { background: #fdf6a9; }
-    body[data-color="Green"]    { background: #dbeeb4; }
-    body[data-color="Teal"]     { background: #bfe8e0; }
-    body[data-color="Blue"]     { background: #c8e3f6; }
-    body[data-color="DarkBlue"] { background: #c6cbe9; }
-    body[data-color="Purple"]   { background: #ddc9e9; }
-    body[data-color="Pink"]     { background: #f6cfe0; }
-    body[data-color="Brown"]    { background: #e4d3c1; }
-    body[data-color="Gray"]     { background: #e4e6e8; }
+    body[data-color="White"]    { background: var(--c-white); }
+    body[data-color="Red"]      { background: var(--c-red); }
+    body[data-color="Orange"]   { background: var(--c-orange); }
+    body[data-color="Yellow"]   { background: var(--c-yellow); }
+    body[data-color="Green"]    { background: var(--c-green); }
+    body[data-color="Teal"]     { background: var(--c-teal); }
+    body[data-color="Blue"]     { background: var(--c-blue); }
+    body[data-color="DarkBlue"] { background: var(--c-darkblue); }
+    body[data-color="Purple"]   { background: var(--c-purple); }
+    body[data-color="Pink"]     { background: var(--c-pink); }
+    body[data-color="Brown"]    { background: var(--c-brown); }
+    body[data-color="Gray"]     { background: var(--c-gray); }
 
     /* 상단 바 전체가 드래그 핸들이다. 버튼은 no-drag 로 되돌린다. */
     #bar { -webkit-app-region: drag; display: flex; align-items: center;
@@ -56,6 +62,8 @@
                   cursor: pointer; font-family: inherit; font-size: var(--fs-xs);
                   line-height: 1; padding: 5px 7px; border-radius: 5px; color: var(--ink-dim); }
     #bar button:hover { background: rgba(0, 0, 0, 0.08); color: var(--ink); }
+    #bar button:disabled { opacity: 0.35; cursor: default; }
+    #bar button:disabled:hover { background: transparent; }
     #close { font-size: var(--fs-sm); }
     #spacer { flex: 1; }
     #body { flex: 1; border: 0; outline: 0; resize: none; padding: 4px 16px 14px;
@@ -69,11 +77,38 @@
              font-size: var(--fs-xs); line-height: var(--lh-body); }
     #badge.show { display: block; }
 
+    /* 색상 피커. #bar 의 접기/✕ 와 다투지 않도록 같은 줄이 아니라 눌렀을 때만
+       펼쳐지는 패널로 둔다 — 상시 노출하면 좁은 포스트잇에서 본문 자리를
+       갉아먹는다. */
+    #colorToggle { font-size: var(--fs-xs); }
+    #colorPicker { display: none; flex-wrap: wrap; gap: 7px; padding: 2px 16px 10px;
+                   -webkit-app-region: no-drag; }
+    #colorPicker.show { display: flex; }
+    #colorPicker button.swatch {
+      width: 20px; height: 20px; padding: 0; border-radius: 50%; cursor: pointer;
+      border: 1px solid rgba(0, 0, 0, 0.22);
+    }
+    #colorPicker button.swatch.current {
+      box-shadow: 0 0 0 2px #fff, 0 0 0 4px rgba(0, 0, 0, 0.55);
+    }
+    #colorPicker button.swatch[data-color="White"]    { background: var(--c-white); }
+    #colorPicker button.swatch[data-color="Red"]      { background: var(--c-red); }
+    #colorPicker button.swatch[data-color="Orange"]   { background: var(--c-orange); }
+    #colorPicker button.swatch[data-color="Yellow"]   { background: var(--c-yellow); }
+    #colorPicker button.swatch[data-color="Green"]    { background: var(--c-green); }
+    #colorPicker button.swatch[data-color="Teal"]     { background: var(--c-teal); }
+    #colorPicker button.swatch[data-color="Blue"]     { background: var(--c-blue); }
+    #colorPicker button.swatch[data-color="DarkBlue"] { background: var(--c-darkblue); }
+    #colorPicker button.swatch[data-color="Purple"]   { background: var(--c-purple); }
+    #colorPicker button.swatch[data-color="Pink"]     { background: var(--c-pink); }
+    #colorPicker button.swatch[data-color="Brown"]    { background: var(--c-brown); }
+    #colorPicker button.swatch[data-color="Gray"]     { background: var(--c-gray); }
+
     /* --- 접힌 모습(책갈피) -------------------------------------------------
        창 전체가 화면 오른쪽 가장자리에 붙은 좁은 세로 띠가 된다. 배경은 위
        body 규칙에서 그대로 온다. 눌러서 펼쳐야 하므로 드래그 영역이 아니다. */
     #bookmark { display: none; }
-    body.folded #bar, body.folded #badge, body.folded #body { display: none; }
+    body.folded #bar, body.folded #badge, body.folded #body, body.folded #colorPicker { display: none; }
     body.folded #bookmark {
       -webkit-app-region: no-drag;
       display: flex; flex: 1; justify-content: center;
@@ -91,11 +126,16 @@
 </head>
 <body>
   <div id="bar">
+    <button id="colorToggle" title="노트 색 바꾸기" disabled>색상</button>
     <span id="status"></span>
     <span id="spacer"></span>
     <button id="fold" title="책갈피로 접기 (화면 오른쪽 가장자리에 붙습니다)">접기</button>
     <button id="close" title="바탕화면에서 내리기 (Keep 메모는 유지됩니다)">✕</button>
   </div>
+  <!-- 스와치는 note.js 가 createElement 로 12개를 직접 만든다. 이름표(title)는
+       우리가 하드코딩한 한국어 문구일 뿐 Keep 데이터가 아니지만, 여기서도
+       innerHTML 은 쓰지 않는다. -->
+  <div id="colorPicker" role="group" aria-label="노트 색상"></div>
   <div id="badge"></div>
   <!-- 불러오기가 성공해야만 note.js 가 readonly 를 푼다. 기본값이 편집 가능이면
        느린 로딩 중에 친 글자가 Keep 원본을 덮어쓰는 경로가 열린다. -->

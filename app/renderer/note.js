@@ -27,6 +27,22 @@ const status = document.getElementById('status')
 const badge = document.getElementById('badge')
 const bookmark = document.getElementById('bookmark')
 const bookmarkLabel = document.getElementById('bookmark-label')
+const colorToggle = document.getElementById('colorToggle')
+const colorPicker = document.getElementById('colorPicker')
+
+// Keep 이 실제로 지원하는 12색. 이름은 gkeepapi.node.ColorValue 의 멤버
+// 이름과 정확히 같아야 한다 — 그래야 body.dataset.color 를 통해 note.html 의
+// CSS 규칙과 맞물린다. 진짜 검증(이 12개가 전부인지)은 사이드카가 한다 —
+// 여기서는 렌더러가 보여줄 스와치의 목록과 순서일 뿐이다.
+const NOTE_COLORS = [
+  ['White', '흰색'], ['Red', '빨강'], ['Orange', '주황'], ['Yellow', '노랑'],
+  ['Green', '초록'], ['Teal', '청록'], ['Blue', '파랑'], ['DarkBlue', '남색'],
+  ['Purple', '보라'], ['Pink', '분홍'], ['Brown', '갈색'], ['Gray', '회색']
+]
+// 색상 저장 요청이 이미 하나 나가 있는 동안 새 클릭을 무시한다. 없으면
+// 스와치를 연달아 누를 때 응답이 뒤섞여 도착해 먼저 보낸 색이 나중 응답으로
+// 덮어써질 수 있다.
+let colorSaving = false
 
 function showConflict (sentText) {
   badge.textContent = '다른 기기에서 수정됨 — 내 편집본은 보관되어 있습니다'
@@ -67,7 +83,81 @@ function renderBookmark () {
 /** 접힘 상태에 맞춰 포스트잇 모습과 책갈피 모습을 갈아 끼운다. */
 function applyFoldUI () {
   document.body.classList.toggle('folded', folded)
-  if (folded) renderBookmark()
+  if (folded) {
+    renderBookmark()
+    // 접히면 #colorPicker 는 CSS 로도 숨지만, 열어둔 채로 접었다가 다시
+    // 펼치면 패널이 열린 채로 돌아오는 것도 어색하다. 접는 순간 닫는다.
+    colorPicker.classList.remove('show')
+  }
+}
+
+/**
+ * 12개 스와치를 한 번만 만든다. Keep 색 이름은 여기서는 우리가 하드코딩한
+ * 고정 목록이지 Keep 이 돌려준 데이터가 아니지만, 그래도 innerHTML 은 쓰지
+ * 않고 createElement 로 만든다 — note.js 전체의 관례를 그대로 따른다.
+ */
+function buildColorPicker () {
+  for (const [name, label] of NOTE_COLORS) {
+    const swatch = document.createElement('button')
+    swatch.type = 'button'
+    swatch.className = 'swatch'
+    swatch.dataset.color = name
+    swatch.title = label
+    swatch.setAttribute('aria-label', label)
+    swatch.addEventListener('click', () => selectColor(name))
+    colorPicker.append(swatch)
+  }
+}
+
+/** 지금 노트의 색과 같은 이름의 스와치에 표시를 두른다. */
+function markCurrentColor () {
+  const current = document.body.dataset.color
+  for (const swatch of colorPicker.children) {
+    swatch.classList.toggle('current', swatch.dataset.color === current)
+  }
+}
+
+/**
+ * 스와치를 눌렀을 때. 화면은 곧장 바뀌고(낙관적 갱신), 저장은 뒤이어
+ * update_note 로 나간다 — 실패하면 원래 색으로 되돌린다.
+ *
+ * 대기 중인 디바운스 저장이 있으면 색 변경보다 먼저 흘려보낸다. ✕/접기와
+ * 똑같은 순서다: 여기서 먼저 flush() 하지 않으면, 타이핑 중이던 텍스트가
+ * 아직 반영되지 않은 채로 색만 담은 update_note 가 먼저 나가고, 뒤이어
+ * 디바운스 타이머가 뒤늦게 두 번째(별개의) 저장 요청을 걸어 두 요청의
+ * 도착 순서가 보장되지 않는다. 반대로, 색 변경 응답으로 body.value 나
+ * savedText 를 절대 건드리지 않는다 — 이 요청은 text 를 보내지 않았으므로
+ * (Python 쪽 text=None) 응답에 실린 note.text 는 그저 서버에 남아있던
+ * 값일 뿐이다. 그걸 그대로 반영하면 방금 흘려보낸(또는 그 사이 사용자가
+ * 다시 친) 편집을 조용히 덮어쓸 수 있다.
+ */
+async function selectColor (name) {
+  if (!loaded || colorSaving) return
+  colorSaving = true
+  colorPicker.classList.remove('show')
+
+  const previousColor = document.body.dataset.color
+  document.body.dataset.color = name
+  markCurrentColor()
+
+  clearTimeout(timer)
+  if (body.value !== savedText) {
+    await flush()
+  }
+
+  status.textContent = '색상 변경 중'
+  const res = await window.keepSticky.updateNote(noteId, { color: name })
+  if (!res.ok) {
+    document.body.dataset.color = previousColor
+    markCurrentColor()
+    status.textContent = res.code === 'AUTH_REQUIRED' ? '재로그인 필요' : '색상 변경 실패'
+    colorSaving = false
+    return
+  }
+  document.body.dataset.color = res.note.color
+  markCurrentColor()
+  status.textContent = '저장됨'
+  colorSaving = false
 }
 
 function showLoadFailure (message) {
@@ -146,6 +236,15 @@ document.getElementById('fold').addEventListener('click', async () => {
 // state.json 에 들고 있으므로 렌더러는 요청만 한다.
 bookmark.addEventListener('click', () => window.keepSticky.unfoldNote(noteId))
 
+// 패널은 정적 UI 라 노트를 불러오기 전에 미리 만들어 둔다. 여는/닫는 것과
+// 실제로 고를 수 있는 것은 별개다 — colorToggle 은 불러오기 전까지 disabled
+// 로 막혀 있다(HTML 기본값. 아래 로딩 성공 경로에서 푼다).
+buildColorPicker()
+colorToggle.addEventListener('click', () => {
+  colorPicker.classList.toggle('show')
+  if (colorPicker.classList.contains('show')) markCurrentColor()
+})
+
 // 접힘 여부는 main 이 정하고 알려준다. 창이 뜬 직후에도 한 번 오므로 재시작
 // 복원(지난 세션에 접힌 채 끝난 메모)에서도 책갈피 모습으로 그려진다.
 window.keepSticky.onFoldState((next) => {
@@ -176,9 +275,12 @@ document.addEventListener('contextmenu', async (e) => {
   }
   // 휴지통으로 보냈으면 이 창의 저장 경로를 닫는다. main 이 곧 창을 닫는데,
   // 그 닫기 경로가 마지막 flush 를 요청하므로 열어두면 방금 버린 메모에
-  // update_note 가 날아간다.
+  // update_note 가 날아간다. 색상 변경도 같은 update_note 경로를 타므로
+  // 똑같이 잠근다.
   loaded = false
   body.readOnly = true
+  colorToggle.disabled = true
+  colorPicker.classList.remove('show')
 })
 
 // 메인 프로세스가 창을 닫기 직전에 부른다 (Alt+F4·종료 등 ✕ 를 거치지 않는
@@ -208,9 +310,11 @@ window.keepSticky.noteId().then(async (id) => {
   // Keep 의 색 이름을 그대로 속성 값으로 심는다 (innerHTML 경로가 아니다).
   // note.html 에 없는 이름이면 어느 규칙에도 안 걸려 기본 노란색이 남는다.
   if (note.color) document.body.dataset.color = note.color
+  markCurrentColor()
   bookmarkText = note.title || (note.text || '').split('\n')[0] || ''
   loaded = true
   body.readOnly = false // 여기가 편집이 열리는 유일한 지점이다
+  colorToggle.disabled = false // 색 변경도 불러오기가 끝나야 열리는 경로다
   status.textContent = ''
   // 접힘 통보가 불러오기보다 먼저 왔을 수 있다(재시작 복원). 이제 제목을
   // 알았으니 책갈피 글자를 제대로 다시 그린다.
