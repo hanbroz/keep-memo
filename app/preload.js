@@ -10,6 +10,17 @@ contextBridge.exposeInMainWorld('keepSticky', {
   trashNote: (id) => ipcRenderer.invoke('notes:trash', id),
   openNote: (id) => ipcRenderer.invoke('notes:open', id),
   closeNote: (id) => ipcRenderer.invoke('notes:close', id),
+  // 목록 창(체크 상자) 전용. visibleIds 는 지금 바탕화면에 떠 있는 메모 id 를
+  // 돌려주고, applySelection 은 체크된 집합에 맞춰 띄우고 내린다. 내리기는
+  // 바탕화면에서만 내리는 것이며 Keep 메모를 지우는 경로는 여기 없다.
+  visibleIds: () => ipcRenderer.invoke('notes:visibleIds'),
+  applySelection: (ids) => ipcRenderer.invoke('notes:applySelection', ids),
+  // 포스트잇 ↔ 책갈피. 좌표 계산과 저장은 전부 main 프로세스가 한다.
+  foldNote: (id) => ipcRenderer.invoke('notes:fold', id),
+  unfoldNote: (id) => ipcRenderer.invoke('notes:unfold', id),
+  // main 이 접힘 상태를 알려준다. 재시작 복원처럼 렌더러가 스스로 알 수 없는
+  // 경로가 있으므로 창이 뜬 직후에도 한 번 온다. 이벤트 객체는 넘기지 않는다.
+  onFoldState: (cb) => ipcRenderer.on('notes:foldState', (_e, folded) => cb(!!folded)),
   exchangeCookie: (token) => ipcRenderer.invoke('auth:exchange', token),
   noteId: () => ipcRenderer.invoke('notes:currentId'),
   // 최초 실행 설정 창(setup-email.html) 전용. 입력값을 검증/저장하는 것은

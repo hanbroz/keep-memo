@@ -5,17 +5,92 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'">
   <title>Keep 메모</title>
   <style>
-    body { font-family: 'Malgun Gothic', sans-serif; margin: 0; padding: 12px; word-break: keep-all; }
-    h1 { font-size: 15px; margin: 0 0 10px; }
+    /* 서체 토큰. style-src 가 'unsafe-inline' 뿐이라 별도 .css 파일을 <link>
+       로 불러오면 CSP 에 막힌다. 그래서 창마다 이 블록을 그대로 둔다 —
+       list / note / setup-email 세 곳의 값은 항상 같이 고쳐야 한다.
+       웹폰트는 쓰지 않는다. 이 앱은 오프라인에서도 떠야 한다.
+
+       한글은 Segoe UI 에 글리프가 없어 자동으로 Malgun Gothic 으로 떨어진다
+       (CSS 폰트 대체는 글자 단위다). 즉 라틴 문자는 Segoe UI, 한글은 맑은
+       고딕이 되어 둘 다 제 모습으로 나온다. */
+    :root {
+      --font-ui: system-ui, 'Segoe UI', 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif;
+      --fs-xs: 12px;   /* 날짜, 보조 설명 */
+      --fs-sm: 13px;   /* 버튼, 상태 */
+      --fs-md: 15px;   /* 본문 */
+      --fs-lg: 18px;   /* 창 제목 */
+      --lh-body: 1.65;
+      --lh-tight: 1.35;
+      --ink: #1f2328;
+      --ink-dim: #6a7178;
+      --line: #e6e8ea;
+    }
+
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      font-family: var(--font-ui);
+      font-size: var(--fs-md);
+      line-height: var(--lh-body);
+      color: var(--ink);
+      background: #fff;
+      /* 한국어는 어절 중간에서 줄바꿈되면 글자가 세로로 깨져 보인다. */
+      word-break: keep-all;
+      overflow-wrap: break-word;
+    }
+
+    header { padding: 18px 20px 14px; border-bottom: 1px solid var(--line); }
+    h1 { margin: 0; font-size: var(--fs-lg); line-height: var(--lh-tight); font-weight: 600; }
+    .hint { margin: 6px 0 0; font-size: var(--fs-xs); line-height: var(--lh-body); color: var(--ink-dim); }
+
+    main { flex: 1; overflow-y: auto; padding: 6px 10px 10px; }
     ul { list-style: none; margin: 0; padding: 0; }
-    li { display: flex; align-items: center; gap: 8px; padding: 8px; border-bottom: 1px solid #eee; }
-    .title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .date { color: #888; font-size: 12px; }
+    li { display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--line); }
+    li:last-child { border-bottom: 0; }
+
+    /* 체크 상자와 제목을 한 label 로 묶어 제목을 눌러도 토글되게 한다.
+       for/id 짝을 쓰지 않으므로 Keep 의 노트 id 를 DOM 속성에 흘리지 않는다. */
+    .row {
+      flex: 1; min-width: 0;
+      display: flex; align-items: center; gap: 12px;
+      padding: 12px 10px; cursor: pointer;
+    }
+    .row input { width: 17px; height: 17px; margin: 0; flex: none; cursor: pointer; }
+    .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .date { flex: none; padding-right: 10px; color: var(--ink-dim); font-size: var(--fs-xs); }
+    .empty { padding: 24px 10px; color: var(--ink-dim); font-size: var(--fs-sm); }
+
+    footer {
+      display: flex; align-items: center; gap: 12px;
+      padding: 14px 20px; border-top: 1px solid var(--line);
+    }
+    button {
+      font-family: inherit; font-size: var(--fs-sm); line-height: 1.4;
+      padding: 8px 16px; border: 1px solid #cfd4d8; border-radius: 6px;
+      background: #f7f8f9; color: var(--ink); cursor: pointer;
+    }
+    button:hover { background: #eef0f2; }
+    #apply { border-color: #2f6feb; background: #2f6feb; color: #fff; font-weight: 600; }
+    #apply:hover { background: #2560d0; }
+    #status { flex: 1; font-size: var(--fs-xs); color: var(--ink-dim); }
   </style>
 </head>
 <body>
-  <h1>Keep 메모 <button id="new">+ 새 메모</button></h1>
-  <ul id="list"></ul>
+  <header>
+    <h1>Keep 메모</h1>
+    <p class="hint">체크한 메모가 바탕화면에 뜹니다. 체크를 풀면 바탕화면에서만
+       내려가고 Keep 메모는 그대로 남습니다.</p>
+  </header>
+  <main>
+    <ul id="list"></ul>
+  </main>
+  <footer>
+    <button id="apply">완료</button>
+    <button id="new">+ 새 메모</button>
+    <span id="status"></span>
+  </footer>
   <script src="list.js"></script>
 </body>
 </html>

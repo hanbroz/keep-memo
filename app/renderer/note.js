@@ -1,6 +1,9 @@
 'use strict'
 
 const DEBOUNCE_MS = 1500
+// 책갈피에 세로로 그릴 글자 수 상한. 넘치면 잘라낸다 — 화면 가장자리에 붙는
+// 띠는 길어질 수 없고, 길어지면 아래 책갈피들을 밀어낸다.
+const BOOKMARK_MAX_CHARS = 10
 let noteId = null
 let timer = null
 // 서버에 마지막으로 반영된(또는 애초에 불러온) 텍스트. "타이머가 걸려
@@ -12,10 +15,18 @@ let savedText = ''
 // 닫혀 있다 — 비어 있는 본문으로 update_note 를 부르면 Keep 의 진짜 내용이
 // 통째로 지워지고, Keep 에는 노트별 버전 기록이 없어 되돌릴 방법이 없다.
 let loaded = false
+// 지금 책갈피로 접혀 있는가. 이 값의 주인은 main 프로세스다 — 재시작 복원처럼
+// 렌더러가 스스로 알 수 없는 경로가 있어서, 접힘 여부는 항상 통보로 받는다.
+let folded = false
+// 책갈피에 세로로 그릴 문구. 불러오기 전에 접힘 통보가 먼저 올 수 있으므로
+// (재시작 복원) 따로 들고 있다가 둘 중 늦게 오는 쪽에서 다시 그린다.
+let bookmarkText = ''
 
 const body = document.getElementById('body')
 const status = document.getElementById('status')
 const badge = document.getElementById('badge')
+const bookmark = document.getElementById('bookmark')
+const bookmarkLabel = document.getElementById('bookmark-label')
 
 function showConflict (sentText) {
   badge.textContent = '다른 기기에서 수정됨 — 내 편집본은 보관되어 있습니다'
@@ -31,6 +42,32 @@ function showSaveFailure (unsavedText) {
   badge.textContent = '저장 실패 — 내 편집본은 보관되어 있습니다'
   badge.classList.add('show')
   badge.title = unsavedText
+}
+
+/**
+ * 책갈피의 세로 글자를 다시 그린다. 한 줄에 한 글자씩, 최대 10 글자.
+ * Keep 의 제목/본문은 외부 데이터이므로 innerHTML 을 쓰지 않고 글자마다
+ * createElement + textContent 로 만든다.
+ */
+function renderBookmark () {
+  // 줄바꿈·연속 공백은 한 칸으로 줄인다. 세로로 세우면 빈 줄이 그대로 낭비가
+  // 되는데, 쓸 수 있는 줄이 10 개뿐이다.
+  const text = (bookmarkText || '(제목없음)').replace(/\s+/g, ' ').trim() || '(제목없음)'
+  bookmark.title = `${text} — 눌러서 펼치기`
+  bookmarkLabel.textContent = ''
+  // Array.from 은 코드 포인트 단위로 쪼갠다. slice(0, 10) 을 문자열에 바로
+  // 쓰면 이모지 같은 서로게이트 쌍이 반 토막 나 깨진 글자가 남는다.
+  for (const ch of Array.from(text).slice(0, BOOKMARK_MAX_CHARS)) {
+    const line = document.createElement('span')
+    line.textContent = ch
+    bookmarkLabel.append(line)
+  }
+}
+
+/** 접힘 상태에 맞춰 포스트잇 모습과 책갈피 모습을 갈아 끼운다. */
+function applyFoldUI () {
+  document.body.classList.toggle('folded', folded)
+  if (folded) renderBookmark()
 }
 
 function showLoadFailure (message) {
@@ -92,8 +129,36 @@ document.getElementById('close').addEventListener('click', async () => {
   window.keepSticky.closeNote(noteId)
 })
 
+document.getElementById('fold').addEventListener('click', async () => {
+  // ✕ 와 완전히 같은 순서다. 접기는 창을 44px 짜리 띠로 줄이므로 편집 화면이
+  // 사라진다 — 여기서 먼저 저장하지 않으면 디바운스 대기 중이던 편집이
+  // 조용히 사라진다. 타이머부터 끊어 뒤늦은 두 번째 저장을 막는다.
+  clearTimeout(timer)
+  if (loaded && body.value !== savedText) {
+    // flush() 는 실패해도 거절하지 않는다. 실패분은 main 이 conflictBackup 에
+    // 보관하고 배지를 띄운다 — 배지는 DOM 에 그대로 남아 펼치면 다시 보인다.
+    await flush()
+  }
+  await window.keepSticky.foldNote(noteId)
+})
+
+// 책갈피를 누르면 접기 직전의 위치와 크기 그대로 돌아온다. 좌표는 main 이
+// state.json 에 들고 있으므로 렌더러는 요청만 한다.
+bookmark.addEventListener('click', () => window.keepSticky.unfoldNote(noteId))
+
+// 접힘 여부는 main 이 정하고 알려준다. 창이 뜬 직후에도 한 번 오므로 재시작
+// 복원(지난 세션에 접힌 채 끝난 메모)에서도 책갈피 모습으로 그려진다.
+window.keepSticky.onFoldState((next) => {
+  folded = next
+  applyFoldUI()
+})
+
 document.addEventListener('contextmenu', async (e) => {
   e.preventDefault()
+  // 접힌 책갈피 위에서는 휴지통 경로를 열지 않는다. 44px 짜리 띠 위의 우클릭은
+  // 빗나가기 쉽고, 그 끝에 있는 것이 되돌리기 어려운 동작이다. 지우려면 먼저
+  // 펼쳐서 어떤 메모인지 보게 한다.
+  if (folded) return
   // confirm() 이 렌더러의 유일한 JS 스레드를 막고 있는 동안 디바운스 타이머가
   // 기한을 넘기면, 스레드가 풀리는 순간(대화상자가 닫히자마자) 그 콜백이
   // trash_note 보다 먼저 또는 뒤에 끼어들어 update_note 와 trash_note 가
@@ -140,9 +205,17 @@ window.keepSticky.noteId().then(async (id) => {
   if (!note) throw new Error('목록에서 이 메모를 찾지 못했습니다')
   body.value = note.text
   savedText = note.text
+  // Keep 의 색 이름을 그대로 속성 값으로 심는다 (innerHTML 경로가 아니다).
+  // note.html 에 없는 이름이면 어느 규칙에도 안 걸려 기본 노란색이 남는다.
+  if (note.color) document.body.dataset.color = note.color
+  bookmarkText = note.title || (note.text || '').split('\n')[0] || ''
   loaded = true
   body.readOnly = false // 여기가 편집이 열리는 유일한 지점이다
   status.textContent = ''
+  // 접힘 통보가 불러오기보다 먼저 왔을 수 있다(재시작 복원). 이제 제목을
+  // 알았으니 책갈피 글자를 제대로 다시 그린다.
+  applyFoldUI()
 }).catch((err) => {
   showLoadFailure(err && err.message ? err.message : String(err))
+  applyFoldUI()
 })

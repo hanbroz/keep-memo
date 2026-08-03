@@ -1,17 +1,27 @@
 'use strict'
 const path = require('node:path')
-const { app, BrowserWindow, ipcMain, session, dialog } = require('electron')
+const electron = require('electron')
+const { app, BrowserWindow, ipcMain, session, dialog } = electron
+// screen 모듈은 app 의 ready 이후에만 쓸 수 있다. 위에서 같이 구조 분해하면
+// 모듈 적재 시점(= ready 이전)에 건드리게 되므로, 쓸 때 꺼내 쓴다. 이 게터를
+// 부르는 코드는 전부 ready 이후 경로(접기/펼치기/재배치)에만 있다.
+const screen = () => electron.screen
 const { Sidecar } = require('./sidecar')
 const { Store } = require('./store')
 const { createLoginWindow, pollCookie } = require('./login')
 const { resolveSidecarCommand } = require('./sidecar-path')
 const { validateEmail } = require('./email-validate')
+const { bookmarkBounds, BOOKMARK } = require('./bookmark-layout')
+const { reconcileSelection } = require('./selection-reconcile')
 
 const PRELOAD = path.join(__dirname, 'preload.js')
 // 창을 닫기 전에 렌더러의 마지막 저장을 기다려 주는 시간. 응답 없는(혹은
 // 이미 사라진) 렌더러 하나 때문에 종료가 막히면 안 되므로 반드시 유한하다.
 // flush 하나를 잃는 편이 닫히지 않는 앱보다 낫다.
 const FLUSH_ON_CLOSE_MS = 3000
+// 펼친 직후, OS 가 뒤늦게 보내는 moved/resized 이벤트가 다 지나갈 때까지
+// 기다리는 시간. 이 창이 왜 필요한지는 boundsFrozen 주석에 있다.
+const UNFOLD_SETTLE_MS = 400
 
 let sidecar = null
 let store = null
@@ -20,6 +30,30 @@ let sidecarStopped = false
 let quitTeardownStarted = false
 const noteWindows = new Map() // noteId -> BrowserWindow
 const flushWaiters = new Map() // webContents.id -> 대기 해제 함수
+
+// 접힌 메모의 순서. 같은 모니터에 접힌 것끼리 이 순서대로 위에서 아래로 쌓인다.
+// displayId 를 접을 때 함께 적어두는 이유: 접고 나면 창은 책갈피 자리로
+// 옮겨가 있어서 "원래 어느 모니터에 있었나"를 창 좌표로 되물을 수 없다.
+const foldOrder = [] // [{ id, displayId }]
+// 지금 위치/크기를 state.json 에 쓰면 안 되는 메모들.
+//
+// 이것이 이 기능 전체에서 제일 조심해야 할 지점이다. createNoteWindow 는
+// moved/resized 마다 창의 현재 좌표를 state.json 에 적는다. 접기는 창을
+// 옮기고 줄이는 동작이므로, 막지 않으면 "펼친 상태의 좌표"가 책갈피 좌표로
+// 덮여 되돌아갈 자리가 사라진다. 접는 순간부터 얼려 두고, 펼친 뒤에도 OS 가
+// 늦게 보내는 이벤트가 지나갈 때까지(UNFOLD_SETTLE_MS) 계속 얼려 둔다.
+const boundsFrozen = new Set() // noteId
+const unfreezeTimers = new Map() // noteId -> Timeout
+// 닫기를 시작했지만 아직 사라지지 않은 창들. 닫기는 즉시 끝나지 않는다 —
+// win.on('close') 가 한 번 막고 렌더러의 마지막 저장을 기다린다. 그 사이에도
+// 창은 noteWindows 에 남아 있으므로, 그냥 세면 방금 내린 메모가 목록 창에
+// 여전히 체크된 것으로 보인다.
+const closingNotes = new Set() // noteId
+
+/** 지금 바탕화면에 실제로 올라가 있는 메모 id. 접힌 것은 포함, 닫는 중은 제외. */
+function desktopIds () {
+  return [...noteWindows.keys()].filter((id) => !closingNotes.has(id))
+}
 
 /**
  * 계정 이메일을 state.json 또는 환경 변수에서 구한다. 저장소(git)에는 개인
@@ -38,8 +72,8 @@ function resolveEmail (store) {
 
 function createSetupEmailWindow () {
   const win = new BrowserWindow({
-    width: 460,
-    height: 300,
+    width: 500,
+    height: 360,
     title: 'Keep 계정 설정',
     webPreferences: { preload: PRELOAD, contextIsolation: true, nodeIntegration: false }
   })
@@ -148,8 +182,10 @@ async function ensureAuth () {
 
 function createListWindow () {
   const win = new BrowserWindow({
-    width: 420,
-    height: 560,
+    width: 460,
+    height: 620,
+    minWidth: 360,
+    minHeight: 320,
     title: 'Keep 메모',
     webPreferences: { preload: PRELOAD, contextIsolation: true, nodeIntegration: false }
   })
@@ -158,6 +194,14 @@ function createListWindow () {
 }
 
 function createNoteWindow (noteId) {
+  // 같은 메모의 창을 두 장 만들면 noteWindows 의 항목이 서로를 덮어쓰고,
+  // 먼저 닫히는 쪽의 'closed' 가 남은 쪽의 항목을 지워 창을 미아로 만든다.
+  // 이미 있으면 앞으로 가져오기만 한다.
+  const existing = noteWindows.get(noteId)
+  if (existing && !existing.isDestroyed()) { existing.focus(); return existing }
+
+  // 펼친 상태의 기하로 만든다. 접힌 채 저장된 메모라도 창은 일단 제자리에
+  // 만들고 아래에서 접는다 — 그래야 펼칠 자리가 창에도 스토어에도 남는다.
   const state = store.setNote(noteId, { visible: true })
   const win = new BrowserWindow({
     x: state.x,
@@ -174,12 +218,20 @@ function createNoteWindow (noteId) {
   noteWindows.set(noteId, win)
 
   const persistBounds = () => {
+    // 접혀 있는 동안(그리고 막 펼친 직후)의 좌표는 책갈피의 것이지 메모의
+    // 것이 아니다. 여기서 적으면 펼칠 자리를 잃는다.
+    if (boundsFrozen.has(noteId)) return
+    if (win.isDestroyed()) return
     const b = win.getBounds()
     store.setNote(noteId, { x: b.x, y: b.y, w: b.width, h: b.height })
     store.save()
   }
   win.on('moved', persistBounds)
   win.on('resized', persistBounds)
+
+  // 렌더러는 자기가 접혀 있는지 모르는 채로 뜬다. 로드가 끝나는 시점에 알려야
+  // 재시작 복원(접힌 채 저장된 메모)에서도 책갈피 모습으로 그려진다.
+  win.webContents.on('did-finish-load', () => sendFoldState(noteId))
 
   // OS 가 창을 닫는 경로(Alt+F4, 작업 관리자, 종료/로그오프)는 렌더러의 ✕
   // 핸들러를 거치지 않는다. 그래서 ✕ 가 하는 "닫기 전에 flush" 가 통째로
@@ -194,9 +246,20 @@ function createNoteWindow (noteId) {
       if (!win.isDestroyed()) win.close()
     })
   })
-  win.on('closed', () => noteWindows.delete(noteId))
+  win.on('closed', () => {
+    // 위 중복 방지 덕에 보통은 항상 참이지만, 지도에서 지우기 전에 확인한다 —
+    // 남의 항목을 지우면 살아 있는 창이 미아가 된다.
+    if (noteWindows.get(noteId) === win) noteWindows.delete(noteId)
+    closingNotes.delete(noteId)
+    // 접힌 채로 닫힌 메모는 책갈피 줄에서 빠지고, 아래 것들이 빈자리를 메운다.
+    forgetFold(noteId)
+    relayoutBookmarks()
+  })
 
   store.save()
+  // 지난 세션에 접힌 채로 끝난 메모는 여기서 다시 접는다. 창이 이미 펼친
+  // 기하로 만들어졌으므로 접기 경로가 그 값을 그대로 보존한다.
+  if (state.folded) foldNote(noteId)
   return win
 }
 
@@ -204,6 +267,124 @@ function windowIdOf (event) {
   const win = BrowserWindow.fromWebContents(event.sender)
   for (const [id, w] of noteWindows) if (w === win) return id
   return null
+}
+
+// --- 접기 / 펼치기 --------------------------------------------------------
+
+function sendFoldState (noteId) {
+  const win = noteWindows.get(noteId)
+  if (!win || win.isDestroyed()) return
+  const wc = win.webContents
+  if (!wc || wc.isDestroyed()) return
+  wc.send('notes:foldState', isFolded(noteId))
+}
+
+function isFolded (noteId) {
+  return foldOrder.some((e) => e.id === noteId)
+}
+
+function forgetFold (noteId) {
+  const i = foldOrder.findIndex((e) => e.id === noteId)
+  if (i >= 0) foldOrder.splice(i, 1)
+  clearTimeout(unfreezeTimers.get(noteId))
+  unfreezeTimers.delete(noteId)
+  boundsFrozen.delete(noteId)
+}
+
+/**
+ * 접힌 메모들을 모니터별로 오른쪽 가장자리에 다시 줄 세운다. 접을 때와 펼칠
+ * 때 모두 부른다 — 하나가 펼쳐지면 그 아래 것들이 빈자리를 메워야 한다.
+ */
+function relayoutBookmarks () {
+  const usedSlots = new Map() // displayId -> 이미 채운 칸 수
+  const displays = screen().getAllDisplays()
+  for (const entry of foldOrder) {
+    const win = noteWindows.get(entry.id)
+    if (!win || win.isDestroyed()) continue
+    const slot = usedSlots.get(entry.displayId) || 0
+    usedSlots.set(entry.displayId, slot + 1)
+    // 접은 뒤에 모니터를 뽑았을 수 있다. 그 경우 주 모니터로 데려온다 —
+    // 없는 화면에 붙여두면 사용자가 영영 못 찾는다.
+    const display = displays.find((d) => d.id === entry.displayId) || screen().getPrimaryDisplay()
+    win.setBounds(bookmarkBounds(display.workArea, slot, BOOKMARK))
+  }
+}
+
+/**
+ * 메모를 책갈피로 접는다. 미저장 편집은 렌더러가 접기 버튼에서 먼저 flush 한
+ * 뒤에 이 경로로 들어온다 (note.js 의 ✕ 와 같은 순서다).
+ */
+function foldNote (noteId) {
+  const win = noteWindows.get(noteId)
+  if (!win || win.isDestroyed()) return false
+  if (isFolded(noteId)) return true
+
+  // 접기 전의 진짜 기하를 먼저 확정한다. 이 한 줄이 "펼치면 돌아갈 자리"다.
+  const b = win.getBounds()
+  store.setNote(noteId, { x: b.x, y: b.y, w: b.width, h: b.height, folded: true })
+  store.save()
+
+  // 지금 이 창이 올라가 있는 모니터. 주 모니터가 아니라 여기에 붙어야 한다.
+  const displayId = screen().getDisplayMatching(b).id
+
+  // 얼리는 것이 창을 옮기는 것보다 반드시 먼저다.
+  boundsFrozen.add(noteId)
+  clearTimeout(unfreezeTimers.get(noteId))
+  unfreezeTimers.delete(noteId)
+  foldOrder.push({ id: noteId, displayId })
+
+  // 책갈피는 44px 짜리 띠다. 테두리를 잡아 끄는 실수로 찌그러지지 않게 한다.
+  win.setResizable(false)
+  relayoutBookmarks()
+  sendFoldState(noteId)
+  return true
+}
+
+/** 책갈피를 접기 직전의 위치와 크기 그대로 되돌린다. */
+function unfoldNote (noteId) {
+  if (!isFolded(noteId)) return false
+  const win = noteWindows.get(noteId)
+
+  const i = foldOrder.findIndex((e) => e.id === noteId)
+  foldOrder.splice(i, 1)
+  const state = store.setNote(noteId, { folded: false })
+  store.save()
+
+  if (win && !win.isDestroyed()) {
+    win.setResizable(true)
+    win.setBounds({ x: state.x, y: state.y, width: state.w, height: state.h })
+  }
+  // 아직 얼어 있는 채로 알린다. 위 setBounds 가 만드는 moved/resized 는 물론
+  // 접을 때 큐에 남아 있던 이벤트까지 다 지나간 뒤에 녹인다. 늦게 도착한
+  // 책갈피 좌표 한 개가 state.json 에 적히면 다음 펼치기가 망가진다.
+  sendFoldState(noteId)
+  clearTimeout(unfreezeTimers.get(noteId))
+  unfreezeTimers.set(noteId, setTimeout(() => {
+    unfreezeTimers.delete(noteId)
+    boundsFrozen.delete(noteId)
+  }, UNFOLD_SETTLE_MS))
+
+  relayoutBookmarks() // 아래 책갈피들이 빈자리를 메운다
+  return true
+}
+
+/**
+ * 바탕화면에서만 내린다. Keep 메모는 손대지 않는다 — 이 함수에서 trash_note
+ * 로 가는 길은 없고, 있어서도 안 된다. 삭제는 포스트잇 우클릭 → 확인 경로뿐이다.
+ */
+function hideNote (id) {
+  // 다시 체크해서 띄울 때는 펼친 포스트잇으로 돌아온다. 바탕화면에 없는
+  // 메모가 "접혀 있다"고 기억할 이유가 없고, 눈에 잘 띄지 않는 책갈피로
+  // 되살아나면 사용자는 아무 일도 안 일어났다고 느낀다.
+  store.setNote(id, { visible: false, folded: false })
+  store.save()
+  const win = noteWindows.get(id)
+  // foldOrder / boundsFrozen 정리는 'closed' 에서 한다. 창이 실제로 사라지기
+  // 전까지는 얼어 있어야 닫는 도중의 이벤트가 좌표를 덮지 않는다.
+  if (win && !win.isDestroyed()) {
+    closingNotes.add(id)
+    win.close()
+  }
 }
 
 app.whenReady().then(async () => {
@@ -255,21 +436,33 @@ app.whenReady().then(async () => {
     if (done) done()
   })
 
+  // createNoteWindow 가 이미 있는 창은 앞으로 가져오기만 한다.
   ipcMain.handle('notes:open', (_e, id) => {
-    const existing = noteWindows.get(id)
-    if (existing) { existing.focus(); return { ok: true } }
     createNoteWindow(id)
     return { ok: true }
   })
 
   ipcMain.handle('notes:close', (_e, id) => {
     // 바탕화면에서 내리기만 한다. Keep 메모는 그대로 둔다.
-    store.setNote(id, { visible: false })
-    store.save()
-    const win = noteWindows.get(id)
-    if (win) win.close()
+    hideNote(id)
     return { ok: true }
   })
+
+  // 목록 창이 체크 상자의 초기 상태를 그리는 데 쓴다. "바탕화면에 있는가"의
+  // 진실은 실제로 떠 있는 창들이다 — 접힌 메모도 창이 있으므로 포함된다.
+  ipcMain.handle('notes:visibleIds', () => desktopIds())
+
+  // 목록 창의 [완료]. 체크된 집합이 곧 바탕화면에 있어야 할 집합이다.
+  ipcMain.handle('notes:applySelection', (_e, checkedIds) => {
+    const { toOpen, toClose } = reconcileSelection(desktopIds(), checkedIds)
+    // 체크 해제는 내리기다. 지우기가 아니다.
+    for (const id of toClose) hideNote(id)
+    for (const id of toOpen) createNoteWindow(id)
+    return { ok: true, opened: toOpen.length, closed: toClose.length }
+  })
+
+  ipcMain.handle('notes:fold', (_e, id) => ({ ok: foldNote(id) }))
+  ipcMain.handle('notes:unfold', (_e, id) => ({ ok: unfoldNote(id) }))
 
   ipcMain.handle('notes:update', async (_e, id, patch) => {
     try {
@@ -298,10 +491,7 @@ app.whenReady().then(async () => {
     } catch (err) {
       return { ok: false, message: err.message, code: err.code }
     }
-    store.setNote(id, { visible: false })
-    store.save()
-    const win = noteWindows.get(id)
-    if (win) win.close()
+    hideNote(id)
     return { ok: true }
   })
 

@@ -5,10 +5,42 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'">
   <title>Keep 계정 설정</title>
   <style>
-    body { font-family: 'Malgun Gothic', sans-serif; padding: 24px; word-break: keep-all; }
-    p { line-height: 1.7; }
-    input { width: 100%; padding: 8px; font-family: Consolas, monospace; box-sizing: border-box; }
-    .warn { color: #b45309; font-weight: bold; }
+    /* 서체 토큰. list.html / note.html 과 같은 값이다. style-src 가
+       'unsafe-inline' 뿐이라 공통 .css 파일을 <link> 로 못 부른다. 웹폰트도
+       쓰지 않는다 — 이 앱은 오프라인에서 떠야 한다. */
+    :root {
+      --font-ui: system-ui, 'Segoe UI', 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif;
+      --fs-xs: 12px;
+      --fs-sm: 13px;
+      --fs-md: 15px;
+      --fs-lg: 18px;
+      --lh-body: 1.7;
+      --lh-tight: 1.35;
+      --ink: #1f2328;
+      --ink-dim: #6a7178;
+    }
+    body {
+      margin: 0; padding: 26px 28px;
+      font-family: var(--font-ui); font-size: var(--fs-md); line-height: var(--lh-body);
+      color: var(--ink); background: #fff;
+      word-break: keep-all; overflow-wrap: break-word;
+    }
+    h2 { margin: 0 0 12px; font-size: var(--fs-lg); line-height: var(--lh-tight); font-weight: 600; }
+    p { margin: 0 0 16px; }
+    input {
+      width: 100%; padding: 10px 12px; box-sizing: border-box;
+      font-family: Consolas, 'Courier New', monospace; font-size: var(--fs-md); line-height: 1.4;
+      border: 1px solid #cfd4d8; border-radius: 6px; color: var(--ink);
+    }
+    input:focus { outline: 2px solid #2f6feb; outline-offset: -1px; border-color: #2f6feb; }
+    .actions { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
+    button {
+      font-family: inherit; font-size: var(--fs-sm); line-height: 1.4;
+      padding: 9px 18px; border: 1px solid #2f6feb; border-radius: 6px;
+      background: #2f6feb; color: #fff; font-weight: 600; cursor: pointer;
+    }
+    button:hover { background: #2560d0; }
+    .warn { font-size: var(--fs-sm); color: #b45309; font-weight: 600; }
   </style>
 </head>
 <body>
@@ -17,7 +49,7 @@
      이 계정으로 로그인해 메모를 가져옵니다. 한 번만 입력하면 다음부터는 다시
      묻지 않습니다.</p>
   <input id="email" placeholder="you@gmail.com" autocomplete="off">
-  <p><button id="submit">시작하기</button> <span id="status" class="warn"></span></p>
+  <div class="actions"><button id="submit">시작하기</button> <span id="status" class="warn"></span></div>
   <script src="setup-email.js"></script>
 </body>
 </html>

@@ -4,7 +4,15 @@ const path = require('node:path')
 
 // 포스트잇 기본 크기. Phase 1 에서는 고정이고, Phase 2 의 드래그 리사이즈가
 // 같은 필드를 그대로 쓴다.
-const DEFAULT_NOTE_STATE = { x: 120, y: 120, w: 320, h: 380, visible: false, conflictBackup: null }
+//
+// x / y / w / h 는 **펼쳐진 상태의 기하**만 담는다. 접힌 책갈피의 좌표는 이
+// 파일에 절대 들어오지 않는다 — 들어오는 순간 펼칠 자리를 잃는다. folded 는
+// visible 과 나란히 놓인다: visible 은 "바탕화면에 있는가", folded 는 "그
+// 바탕화면 위에서 책갈피로 접혀 있는가"다. 접힌 메모도 바탕화면에 있으므로
+// visible 은 여전히 true 이고, 목록 창에서도 체크된 상태로 보인다.
+const DEFAULT_NOTE_STATE = {
+  x: 120, y: 120, w: 320, h: 380, visible: false, folded: false, conflictBackup: null
+}
 
 class Store {
   constructor (filePath) {

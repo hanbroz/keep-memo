@@ -54,6 +54,29 @@ test('visible 이 false 인 노트는 목록에서 빠진다', () => {
   assert.deepStrictEqual(s.visibleIds(), ['n1'])
 })
 
+test('새 노트는 접히지 않은 상태로 시작한다', () => {
+  const s = new Store(tmpFile())
+  s.load()
+  s.setNote('n1', { visible: true })
+  assert.strictEqual(s.getNote('n1').folded, false)
+})
+
+test('접힌 채로 재시작해도 folded 와 펼친 기하가 함께 살아남는다', () => {
+  const file = tmpFile()
+  const a = new Store(file)
+  a.load()
+  a.setNote('n1', { x: 700, y: 300, w: 320, h: 380, visible: true, folded: true })
+  a.save()
+
+  const b = new Store(file)
+  b.load()
+  const n = b.getNote('n1')
+  assert.strictEqual(n.folded, true)
+  assert.deepStrictEqual([n.x, n.y, n.w, n.h], [700, 300, 320, 380],
+    '펼친 상태의 기하가 책갈피 좌표로 덮이지 않았다')
+  assert.deepStrictEqual(b.visibleIds(), ['n1'], '접힌 메모도 바탕화면에 있는 것으로 센다')
+})
+
 test('이메일을 저장한 뒤 다시 읽으면 값이 유지된다', () => {
   const file = tmpFile()
   const a = new Store(file)
