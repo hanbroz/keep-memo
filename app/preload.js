@@ -5,6 +5,10 @@ const { contextBridge, ipcRenderer } = require('electron')
 // Phase 3 에서 리치 텍스트를 다루게 되므로, Node API 경로를 처음부터 막는다.
 contextBridge.exposeInMainWorld('keepSticky', {
   listNotes: () => ipcRenderer.invoke('notes:list'),
+  // 목록 창의 [동기화]. 사이드카에서 keep.sync() 를 먼저 부른 뒤 다시 읽은
+  // 목록을 { ok, notes } 로 돌려준다(실패하면 { ok:false, message, code }).
+  // list_notes 와 달리 다른 기기에서 생긴 변경(특히 삭제)까지 반영한다.
+  syncNotes: () => ipcRenderer.invoke('notes:sync'),
   createNote: (title, text) => ipcRenderer.invoke('notes:create', title, text),
   updateNote: (id, patch) => ipcRenderer.invoke('notes:update', id, patch),
   // 폰에서 만든 **진짜 Keep List** 노트의 저장. 이 앱은 List 를 새로 만들지

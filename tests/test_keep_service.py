@@ -179,6 +179,13 @@ class FakeKeepWithNodes(FakeKeep):
         # 체크리스트 쪽 "다른 기기가 이겼다"를 흉내내는 훅. sync 때 한 번
         # 불리고, 인자로 받은 노드를 마음대로 고칠 수 있다.
         self.server_items_override = None
+        # "다른 기기가 이 노드를 trash() 하고 먼저 sync 했다"를 흉내낸다.
+        # list_notes 는 sync() 를 부르지 않으므로 이 집합이 그대로 남아
+        # 있으면 find() 에 여전히 보인다 — sync_notes 만 sync() 를 실제로
+        # 불러야 여기 담긴 id 가 트인다(trashed=True 로 바뀐다).
+        self.deferred_trash_ids = set()
+        # 다음 sync() 호출을 실패하게 만드는 훅. None 이면 평소대로 동작한다.
+        self.sync_error = None
 
     def createNote(self, title=None, text=None):  # noqa: N802 - gkeepapi 명명 규칙
         node = FakeNode(f"n{len(self.nodes) + 1}", title or "", text or "")
@@ -197,6 +204,8 @@ class FakeKeepWithNodes(FakeKeep):
         return iter([n for n in self.nodes.values() if not n.trashed])
 
     def sync(self, resync=False):
+        if self.sync_error is not None:
+            raise self.sync_error
         super().sync(resync)
         if self.server_override is not None:
             for node in self.nodes.values():
@@ -207,6 +216,11 @@ class FakeKeepWithNodes(FakeKeep):
             for node in self.nodes.values():
                 if isinstance(node, FakeListNode):
                     self.server_items_override(node)
+        for node_id in self.deferred_trash_ids:
+            node = self.nodes.get(node_id)
+            if node is not None:
+                node.trashed = True
+        self.deferred_trash_ids.clear()
 
 
 @pytest.fixture
@@ -252,6 +266,76 @@ def test_create_then_list(account):
     assert notes[0]["text"] == "본문"
     assert notes[0]["color"] == "Yellow"
     assert notes[0]["updated"] == "2026-07-30T09:00:00"
+
+
+# --- 동기화 -----------------------------------------------------------------
+#
+# list_notes 는 세션의 첫 authenticate() 가 채운 상태를 그대로 보여줄 뿐 sync()
+# 를 부르지 않는다. 그래서 다른 기기(폰이나 keep.google.com)에서 생긴 변경,
+# 특히 삭제가 이 세션에 영영 반영되지 않는 문제가 있었다 — 사용자가 실제로
+# 겪은 "Keep 에서 지웠는데 앱에는 남아 있다"가 이것이다. sync_notes 는 그
+# 간극을 메운다.
+
+
+def test_sync_notes_calls_sync_before_listing(account):
+    """sync_notes 는 목록을 만들기 전에 실제로 keep.sync() 를 부른다."""
+    # account._keep 은 _require_keep() 이 처음 불릴 때까지 None 이다 — 아직
+    # 아무 RPC 도 안 걸었으니 먼저 하나 걸어 인증을 트인다.
+    _call(account, "list_notes")
+    before = account._keep.synced
+    _call(account, "sync_notes")
+    assert account._keep.synced == before + 1
+
+
+def test_sync_notes_returns_same_shape_as_list_notes(account):
+    """응답 모양(키 집합)이 list_notes 와 같아야 한다 — 렌더러가 두 RPC 의
+    결과를 같은 코드 경로로 다룰 수 있으려면 이것이 성립해야 한다."""
+    _call(account, "create_note", title="제목", text="본문")
+    list_res = _call(account, "list_notes")["result"]
+    sync_res = _call(account, "sync_notes")["result"]
+    assert set(sync_res) == set(list_res) == {"notes"}
+    assert sync_res["notes"] == list_res["notes"]
+
+
+def test_sync_notes_reflects_deletion_that_list_notes_would_miss(account):
+    """이 시험이 이번 수정이 고치는 버그 그 자체를 재현한다.
+
+    다른 기기가 메모를 trash() 하고 먼저 sync 했다고 하자. 이 세션은 아직
+    sync() 를 부르지 않았으므로 로컬 노드는 여전히 trashed=False 다.
+    list_notes 는 sync() 를 부르지 않으니 그 메모가 계속 보여야 하고(=버그
+    재현), sync_notes 는 sync() 를 부르니 사라져야 한다(=고침 확인)."""
+    created = _call(account, "create_note", title="t", text="곧 지워질 메모")["result"]["note"]
+
+    # "다른 기기가 trash() 하고 sync 했다"를 흉내낸다 — 로컬 노드는 아직 그
+    # 사실을 모른다(deferred_trash_ids 에만 적혀 있고, 다음 sync() 에서만
+    # 실제로 trashed=True 로 바뀐다).
+    account._keep.deferred_trash_ids.add(created["id"])
+
+    still_there = _call(account, "list_notes")["result"]["notes"]
+    assert any(n["id"] == created["id"] for n in still_there), \
+        "list_notes 는 sync 하지 않으므로 아직 보여야 한다"
+
+    after_sync = _call(account, "sync_notes")["result"]["notes"]
+    assert not any(n["id"] == created["id"] for n in after_sync), \
+        "sync_notes 는 sync() 를 불렀으므로 삭제가 반영돼야 한다"
+
+
+def test_sync_notes_failure_is_an_error_not_a_silent_empty_list(account):
+    """sync() 가 실패하면(네트워크, 만료된 세션 등) 그 실패가 에러로 떨어져야
+    한다. 조용히 빈 목록을 돌려주면 사용자는 "메모가 전부 지워졌다"고 오해한다."""
+    # account._keep 은 _require_keep() 이 처음 불릴 때까지 None 이다.
+    _call(account, "list_notes")
+    account._keep.sync_error = RuntimeError("network unreachable")
+    res = _call(account, "sync_notes")
+    assert "error" in res
+    assert res["error"]["code"] == "INTERNAL"
+    assert "result" not in res
+
+
+def test_sync_notes_is_whitelisted(service):
+    """ALLOWED_METHODS 가 보안 경계다 — 새 RPC 는 반드시 여기 올라야 닿을 수
+    있다."""
+    assert "sync_notes" in ks.ALLOWED_METHODS
 
 
 def test_update_without_conflict(account):

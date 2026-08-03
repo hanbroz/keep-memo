@@ -26,6 +26,7 @@ ALLOWED_METHODS = frozenset({
     "exchange_cookie",
     "set_account",
     "list_notes",
+    "sync_notes",
     "create_note",
     "update_note",
     "update_checklist",
@@ -196,6 +197,34 @@ class KeepService:
 
     def list_notes(self) -> dict:
         keep = self._require_keep()
+        notes = [_serialize(n) for n in keep.find()]
+        notes.sort(key=lambda n: n["updated"], reverse=True)
+        return {"notes": notes}
+
+    def sync_notes(self) -> dict:
+        """Keep 서버와 맞춘 뒤 최신 목록을 돌려준다. list_notes 와 응답 모양은 같다.
+
+        list_notes 는 세션의 첫 authenticate() 가 채워 둔 상태를 그대로 보여줄
+        뿐이다 — 이 파일의 다른 sync() 호출은 전부 이 세션이 쓴 뒤에만
+        일어나므로, 다른 기기(폰이나 keep.google.com)에서 생긴 변경, 특히
+        **삭제**는 이 세션에 앉은 채로는 영영 반영되지 않는다. 사용자가 실제로
+        겪은 증상이 그것이다: Keep 에서 지운 메모가 앱에는 계속 남아 있었다.
+
+        keep.sync()(인자 없음, 델타 동기화)로 충분한지 keep.sync(resync=True)
+        (전부 지우고 새로 받기)가 필요한지는 추측하지 않고 실제 계정으로
+        확인했다: 세션 A 가 메모를 만들고 sync() 한 뒤, 독립적으로 인증한
+        세션 B 가 그 메모를 trash() 하고 sync() 하면, 세션 A 가 델타
+        sync()만 불러도 find() 결과에서 그 메모가 사라진다(gkeepapi 가 trashed
+        상태 변경을 다른 필드 갱신과 똑같이 델타로 내려주고, find() 는 기본
+        인자로 trashed 노드를 거르기 때문이다). 그래서 자원을 더 쓰는
+        resync=True 대신 인자 없는 sync() 를 쓴다.
+
+        sync() 가 실패하면(네트워크, 만료된 세션 등) 그 예외는 여기서 잡지
+        않는다 — handle() 의 일반 except 가 INTERNAL 오류로 감싸 돌려주므로,
+        실패가 조용히 빈 목록으로 보이는 일은 없다.
+        """
+        keep = self._require_keep()
+        keep.sync()
         notes = [_serialize(n) for n in keep.find()]
         notes.sort(key=lambda n: n["updated"], reverse=True)
         return {"notes": notes}

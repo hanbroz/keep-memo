@@ -14,6 +14,7 @@ const { resolveSidecarCommand } = require('./sidecar-path')
 const { validateEmail } = require('./email-validate')
 const { bookmarkBounds, BOOKMARK } = require('./bookmark-layout')
 const { reconcileSelection } = require('./selection-reconcile')
+const { orphanedNoteIds } = require('./sync-reconcile')
 const { validateNotePatch, validateChecklistPatch } = require('./note-patch')
 // Ctrl+클릭으로 연 주소를 **여기서 다시 검증한다.** 렌더러도 같은 함수를 쓰지만
 // (즉시 안내를 띄우기 위해서다), 렌더러는 신뢰 경계의 바깥쪽이라 그쪽 검사만으로는
@@ -165,15 +166,21 @@ const unfreezeTimers = new Map() // noteId -> Timeout
 // 창은 noteWindows 에 남아 있으므로, 그냥 세면 방금 내린 메모가 목록 창에
 // 여전히 체크된 것으로 보인다.
 const closingNotes = new Set() // noteId
-// 이번 실행에서 Keep 휴지통으로 보낸 메모 id. 여기 들어온 id 로는 update_note 가
-// 더 이상 나가지 않는다.
+// 이번 실행에서 "이제 없다"고 확인된 메모 id. 여기 들어온 id 로는 update_note 가
+// 더 이상 나가지 않는다. 두 경로로 채워진다:
+//   1) 이 앱에서 trash_note 를 불러 방금 Keep 휴지통으로 보낸 경우.
+//   2) [동기화] 가 받아온 최신 목록에 없어서(다른 기기가 지웠거나 트래시로
+//      보낸 경우) 고아로 판정된 경우 — orphanedNoteIds() 가 이 판정을 한다.
+// 둘 다 결과는 같다: 이 세션에서는 그 노트가 더 이상 존재하지 않으므로 그
+// id 로의 저장은 사이드카까지 갈 필요 없이 여기서 막는다.
 //
-// 왜 필요한가: trash 가 성공하면 곧바로 hideNote() 가 창을 닫고, 그 닫기 경로는
-// 렌더러에 마지막 flush 를 요청한다. 렌더러도 자기 저장 경로를 잠그지만(note.js
-// 의 trashCurrentNote), 잠그기 전에 이미 걸려 있던 요청이나 앞으로 생길 어떤
-// 경로가 하나라도 새면 방금 버린 메모로 저장이 날아가고, 그 실패분이
-// conflictBackup 에 남는다 — 존재하지 않는 메모의 본문이 state.json 에 남는
-// 것이다. 렌더러 하나만 믿지 않고 main 에서도 막는다.
+// 왜 필요한가: trash/고아 판정이 나면 곧바로 hideNote() 가 창을 닫고, 그
+// 닫기 경로는 렌더러에 마지막 flush 를 요청한다. 렌더러도 자기 저장 경로를
+// 잠그지만(note.js 의 trashCurrentNote), 잠그기 전에 이미 걸려 있던 요청이나
+// 앞으로 생길 어떤 경로가 하나라도 새면 이미 없는 메모로 저장이 날아가
+// NOT_FOUND 를 받거나, 그 실패분이 conflictBackup 에 남는다 — 존재하지 않는
+// 메모의 본문이 state.json 에 남는 것이다. 렌더러 하나만 믿지 않고 main 에서도
+// 막는다.
 const trashedNotes = new Set() // noteId
 
 /** 지금 바탕화면에 실제로 올라가 있는 메모 id. 접힌 것은 포함, 닫는 중은 제외. */
@@ -778,6 +785,42 @@ app.whenReady().then(async () => {
   startSidecar()
 
   ipcMain.handle('notes:list', () => sidecar.call('list_notes'))
+
+  // 목록 창의 [동기화]. list_notes 는 이 세션이 맨 처음 authenticate() 했을
+  // 때의 상태를 그대로 보여줄 뿐이라, 다른 기기(폰이나 keep.google.com)에서
+  // 생긴 변경 — 특히 삭제 — 가 이 세션에는 영영 안 보이는 문제가 있었다.
+  // 사이드카의 sync_notes 는 keep.sync() 를 먼저 부른 뒤 목록을 만든다
+  // (keep_service.py 의 sync_notes 주석에 실계정으로 확인한 근거가 있다).
+  //
+  // 실패(네트워크, 만료된 세션, 죽은 사이드카)는 던지지 않고 { ok:false }
+  // shape 로 돌려준다 — auth:exchange 와 같은 관례다. ipcMain.handle 이
+  // 던지면 렌더러에는 message 만 건너가고 err.code 는 사라지므로, 코드를
+  // 보존해 렌더러가 AUTH_REQUIRED 를 다른 실패와 구별해 보여줄 수 있게 한다.
+  ipcMain.handle('notes:sync', async () => {
+    let result
+    try {
+      result = await sidecar.call('sync_notes')
+    } catch (err) {
+      return { ok: false, message: err.message, code: err.code }
+    }
+    const notes = Array.isArray(result && result.notes) ? result.notes : []
+
+    // Keep 에서 사라진(다른 기기가 지웠거나 트래시로 보낸) 메모의 포스트잇이
+    // 아직 바탕화면에 떠 있을 수 있다. 그대로 두면 다음 저장이 사이드카에서
+    // NOT_FOUND 로 떨어진다 — 사용자에게는 "저장이 계속 실패하는 멀쩡해 보이는
+    // 창"으로만 보인다. 여기서 미리 바탕화면에서 내린다. trash_note 는 부르지
+    // 않는다 — Keep 에는 이미 없는 메모라 다시 지우라고 할 대상이 없다.
+    const orphans = orphanedNoteIds(desktopIds(), notes)
+    for (const id of orphans) {
+      trashedNotes.add(id)
+      hideNote(id)
+      store.forgetNote(id)
+    }
+    if (orphans.length > 0) store.save()
+
+    return { ok: true, notes }
+  })
+
   ipcMain.handle('notes:create', async (_e, title, text) => {
     const res = await sidecar.call('create_note', { title, text })
     return res.note

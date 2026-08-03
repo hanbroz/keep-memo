@@ -28,6 +28,7 @@ const renderedRows = []
 const listEl = document.getElementById('list')
 const statusEl = document.getElementById('status')
 const searchEl = document.getElementById('search')
+const syncEl = document.getElementById('sync')
 const panelEl = document.getElementById('settings')
 const toggleEl = document.getElementById('settings-toggle')
 const familyEl = document.getElementById('font-family')
@@ -117,17 +118,71 @@ async function refreshChecks () {
   for (const row of renderedRows) row.check.checked = checkedIds.has(row.id)
 }
 
-async function reload () {
-  const [{ notes }, visibleIds] = await Promise.all([
-    window.keepSticky.listNotes(),
-    window.keepSticky.visibleIds()
-  ])
+/**
+ * 새로 받은 노트 목록과 지금 바탕화면 상태로 화면을 다시 세운다. reload() 와
+ * [동기화] 가 둘 다 쓴다 — 노트를 어디서 받아왔는지(listNotes 인지 syncNotes
+ * 인지)만 다르고 그 뒤에 할 일은 같다.
+ *
+ * 검색어는 건드리지 않는다 — render() 가 지금 입력칸 값을 그대로 다시 읽는다.
+ * 체크 상태는 여기서 실제 바탕화면(visibleIds)으로 통째로 다시 맞춘다:
+ * [동기화]가 다른 기기에서 사라진 메모의 포스트잇을 main 프로세스 쪽에서
+ * 이미 내렸을 수 있으므로(sync-reconcile.js), 화면의 체크도 그 결과를 그대로
+ * 따라가야 한다.
+ */
+function applyNotesAndVisible (notes, visibleIds) {
   allNotes = Array.isArray(notes) ? notes : []
   notesLoaded = true
   checkedIds.clear()
   for (const id of visibleIds) checkedIds.add(id)
   render()
 }
+
+async function reload () {
+  const [{ notes }, visibleIds] = await Promise.all([
+    window.keepSticky.listNotes(),
+    window.keepSticky.visibleIds()
+  ])
+  applyNotesAndVisible(notes, visibleIds)
+}
+
+// 이미 진행 중인 동기화가 있는가. 응답을 기다리는 동안 두 번째 클릭이 쌓이지
+// 않게 한다 — 버튼을 disabled 로 두는 것과 별개로, 더블클릭처럼 disabled 반영
+// 전에 두 번째 이벤트가 낄 수 있는 경로까지 막는다.
+let syncing = false
+
+/**
+ * [동기화]. 사이드카에서 keep.sync() 를 부른 뒤 다시 읽은 목록을 받아온다 —
+ * 다른 기기(폰이나 keep.google.com)에서 생긴 변경, 특히 삭제가 이 세션에
+ * 반영되는 유일한 통로다(재시작 말고는). 네트워크 왕복이라 눈에 띄게 걸릴 수
+ * 있으므로 진행 중/끝난 결과를 모두 상태 줄에 남긴다.
+ */
+async function syncNotes () {
+  if (syncing) return
+  syncing = true
+  syncEl.disabled = true
+  statusEl.textContent = '동기화하는 중…'
+  try {
+    const res = await window.keepSticky.syncNotes()
+    if (!res.ok) {
+      statusEl.textContent = res.code === 'AUTH_REQUIRED'
+        ? '재로그인이 필요합니다'
+        : `동기화하지 못했습니다: ${res.message}`
+      return
+    }
+    const visibleIds = await window.keepSticky.visibleIds()
+    applyNotesAndVisible(res.notes, visibleIds)
+    statusEl.textContent = '동기화했습니다'
+  } catch (err) {
+    // notes:sync 는 { ok:false } 로 실패를 돌려주는 것이 정상 경로지만,
+    // IPC 자체가 끊기는 것처럼 던지는 경로도 이론상 남아 있을 수 있다 —
+    // 여기서도 침묵하지 않는다.
+    statusEl.textContent = err && err.message ? `동기화하지 못했습니다: ${err.message}` : '동기화하지 못했습니다'
+  } finally {
+    syncing = false
+    syncEl.disabled = false
+  }
+}
+syncEl.addEventListener('click', () => { syncNotes() })
 
 document.getElementById('apply').addEventListener('click', async () => {
   if (!notesLoaded) {
