@@ -14,7 +14,6 @@ const { validateEmail } = require('./email-validate')
 const { bookmarkBounds, BOOKMARK } = require('./bookmark-layout')
 const { reconcileSelection } = require('./selection-reconcile')
 const { validateNotePatch } = require('./note-patch')
-const { joinTitleAndText } = require('./renderer/note-title')
 const { trayMenuTemplate, TRAY_TOOLTIP } = require('./tray-menu')
 const { TRAY_ICON_DATA_URL } = require('./tray-icon')
 
@@ -636,17 +635,19 @@ app.whenReady().then(async () => {
     if (!validated.ok) {
       return { ok: false, message: validated.message, code: 'BAD_REQUEST' }
     }
-    // color 전용 patch(title 도 text 도 없음)에서는 보관할 미저장 "본문"이
+    // color 전용 patch(title 도 text 도 없음)에서는 보관할 미저장 "제목/본문"이
     // 애초에 없다 — selectColor() 는 편집기 내용을 건드리지 않는다. 그
     // 경우에만 conflictBackup 을 null 로 정규화한다(DEFAULT_NOTE_STATE.
     // conflictBackup 도 null 이 "보관본 없음"의 표현이다). title 이나 text 가
-    // 하나라도 있으면, 렌더러가 쪼개 보낸 두 조각을 joinTitleAndText 로 다시
-    // 합쳐 사용자가 화면에서 실제로 보고 있던 전체 문자열을 복원한다 —
-    // res.sentText(사이드카가 돌려주는 값)나 validated.params.text 만으로는
-    // title 이 빠진 본문 조각만 남아 "화면에 있던 전부"가 아니게 된다.
+    // 하나라도 있으면 렌더러가 보낸 두 필드를 { title, text } 그대로 보관한다 —
+    // 포스트잇은 이제 두 칸(제목 입력칸/본문 textarea)이 각자 title/text 를
+    // 담당하므로 하나로 합쳤다가 나중에 다시 나눌 이유가 없다. 예전에는 여기서
+    // joinTitleAndText 로 한 문자열을 만들었는데, 그건 편집기가 한 칸짜리
+    // textarea 하나였을 때(첫 줄이 제목 역할) 그 한 문자열을 복원하기 위한
+    // 것이었다.
     const hasTextEdit = validated.params.title !== undefined || validated.params.text !== undefined
     const sentContent = hasTextEdit
-      ? joinTitleAndText(validated.params.title, validated.params.text)
+      ? { title: validated.params.title, text: validated.params.text }
       : null
     try {
       const res = await sidecar.call('update_note', { id, ...validated.params })

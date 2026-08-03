@@ -6,12 +6,12 @@ const DEBOUNCE_MS = 1500
 const BOOKMARK_MAX_CHARS = 10
 let noteId = null
 let timer = null
-// 서버에 마지막으로 반영된(또는 애초에 불러온) 편집기 문자열. title 과
-// text 를 joinTitleAndText 로 합친 값이다 — body.value 자체가 이제 title+text
-// 를 합쳐 보여주므로, 비교 기준도 그 합쳐진 문자열이어야 한다. "타이머가 걸려
-// 있는가"가 아니라 이 값과 body.value 가 다른가로 미저장 편집 유무를
-// 판단한다 — 우클릭 후 취소처럼 타이머 없이도 미저장 편집이 남는 경로가
-// 있기 때문이다.
+// 서버에 마지막으로 반영된(또는 애초에 불러온) 제목/본문. title 입력칸과
+// body 텍스트영역이 이제 Keep 의 두 필드를 각자 그대로 보여주므로(합치거나
+// 쪼개지 않는다), 비교 기준도 두 값이다. "타이머가 걸려 있는가"가 아니라 이
+// 값들과 title.value / body.value 가 다른가로 미저장 편집 유무를 판단한다 —
+// 우클릭 후 취소처럼 타이머 없이도 미저장 편집이 남는 경로가 있기 때문이다.
+let savedTitle = ''
 let savedText = ''
 // 본문을 실제로 Keep 에서 받아왔는가. 이 값이 false 인 동안 저장 경로는 완전히
 // 닫혀 있다 — 비어 있는 본문으로 update_note 를 부르면 Keep 의 진짜 내용이
@@ -24,6 +24,7 @@ let folded = false
 // (재시작 복원) 따로 들고 있다가 둘 중 늦게 오는 쪽에서 다시 그린다.
 let bookmarkText = ''
 
+const title = document.getElementById('title')
 const body = document.getElementById('body')
 const status = document.getElementById('status')
 const badge = document.getElementById('badge')
@@ -46,20 +47,45 @@ const NOTE_COLORS = [
 // 덮어써질 수 있다.
 let colorSaving = false
 
-function showConflict (sentText) {
-  badge.textContent = '다른 기기에서 수정됨 — 내 편집본은 보관되어 있습니다'
-  badge.classList.add('show')
-  badge.title = sentText
+/**
+ * 배지 툴팁에 보여줄 한 문자열을 만든다. 되돌리기용(왕복 보존) 데이터가
+ * 아니라 사람이 읽을 요약일 뿐이므로, title 이 있으면 앞에 붙이고 없으면
+ * text 만 보여주는 정도로 충분하다 — 저장은 항상 title/text 를 필드
+ * 그대로 보내므로 이 문자열을 다시 나눌 일이 없다.
+ */
+function summarize (unsavedTitle, unsavedText) {
+  return unsavedTitle ? `${unsavedTitle}\n${unsavedText}` : unsavedText
 }
 
-function showSaveFailure (unsavedText) {
+function showConflict (sentTitle, sentText) {
+  badge.textContent = '다른 기기에서 수정됨 — 내 편집본은 보관되어 있습니다'
+  badge.classList.add('show')
+  badge.title = summarize(sentTitle, sentText)
+}
+
+function showSaveFailure (unsavedTitle, unsavedText) {
   // 다른 기기와의 충돌이 아니라 저장 자체(네트워크/재로그인/사이드카)가
   // 실패한 경우다. 같은 배지 UI 를 재사용하되 문구는 다르게 둔다 — 사용자가
   // "누군가 내 메모를 고쳤다"로 오해하면 안 된다. main 프로세스가 이미
-  // conflictBackup 에 이 텍스트를 저장했다.
+  // conflictBackup 에 title/text 둘 다 저장했다.
   badge.textContent = '저장 실패 — 내 편집본은 보관되어 있습니다'
   badge.classList.add('show')
-  badge.title = unsavedText
+  badge.title = summarize(unsavedTitle, unsavedText)
+}
+
+/**
+ * 지금 이 순간 입력칸에 있는 값으로 책갈피 문구를 뽑는다. 순수 로직(제목이
+ * 있으면 제목, 없으면 본문 첫 줄)은 deriveBookmarkText 에 있다 — note.html 이
+ * 이 스크립트보다 먼저 불러 전역에 건 함수다(bookmark-text.js 참고). 이
+ * 함수가 하는 일은 그 순수 함수에 지금 DOM 값을 넘기는 것뿐이다.
+ *
+ * 저장 여부와 무관하게 항상 title.value / body.value 를 직접 읽는다. 저장된
+ * (savedTitle/savedText) 값을 대신 썼다면, 막 제목을 치고 저장 전에 곧바로
+ * 접었을 때 여전히 로드 시점의(또는 빈) 값이 나와 버린다 — 이 함수가 고치는
+ * 버그가 바로 그것이다.
+ */
+function currentBookmarkText () {
+  return deriveBookmarkText(title.value, body.value)
 }
 
 /**
@@ -127,11 +153,11 @@ function markCurrentColor () {
  * 똑같은 순서다: 여기서 먼저 flush() 하지 않으면, 타이핑 중이던 텍스트가
  * 아직 반영되지 않은 채로 색만 담은 update_note 가 먼저 나가고, 뒤이어
  * 디바운스 타이머가 뒤늦게 두 번째(별개의) 저장 요청을 걸어 두 요청의
- * 도착 순서가 보장되지 않는다. 반대로, 색 변경 응답으로 body.value 나
- * savedText 를 절대 건드리지 않는다 — 이 요청은 text 를 보내지 않았으므로
- * (Python 쪽 text=None) 응답에 실린 note.text 는 그저 서버에 남아있던
- * 값일 뿐이다. 그걸 그대로 반영하면 방금 흘려보낸(또는 그 사이 사용자가
- * 다시 친) 편집을 조용히 덮어쓸 수 있다.
+ * 도착 순서가 보장되지 않는다. 반대로, 색 변경 응답으로 title.value/body.value
+ * 나 savedTitle/savedText 를 절대 건드리지 않는다 — 이 요청은 title/text 를
+ * 보내지 않았으므로(Python 쪽 둘 다 None) 응답에 실린 note.title/note.text 는
+ * 그저 서버에 남아있던 값일 뿐이다. 그걸 그대로 반영하면 방금 흘려보낸(또는
+ * 그 사이 사용자가 다시 친) 편집을 조용히 덮어쓸 수 있다.
  */
 async function selectColor (name) {
   if (!loaded || colorSaving) return
@@ -143,7 +169,7 @@ async function selectColor (name) {
   markCurrentColor()
 
   clearTimeout(timer)
-  if (body.value !== savedText) {
+  if (title.value !== savedTitle || body.value !== savedText) {
     await flush()
   }
 
@@ -176,42 +202,59 @@ async function flush () {
   // 이 한 줄이 "빈 포스트잇에 한 글자 → Keep 메모 전체가 그 한 글자로 교체"
   // 를 막는 마지막 방어선이다.
   if (!loaded) return
-  const attempt = body.value
-  // 편집기의 첫 줄이 title, 그 다음이 text 다 — splitTitleAndText 는
-  // note-title.js 가 전역에 건 순수 함수다(require 없음, note.html 이 이
-  // 파일보다 먼저 그 스크립트를 불러온다).
-  const { title, text } = splitTitleAndText(attempt)
+  // title/text 는 각자의 입력칸에서 그대로 온다 — 합치거나 쪼갤 필요가 없다.
+  // 두 필드는 이미 Keep 이 저장할 두 필드 그 자체다.
+  const attemptTitle = title.value
+  const attemptText = body.value
   status.textContent = '저장 중'
-  const res = await window.keepSticky.updateNote(noteId, { title, text })
+  const res = await window.keepSticky.updateNote(noteId, { title: attemptTitle, text: attemptText })
   if (!res.ok) {
     // notes:update 는 이제 실패해도 거절(reject)하지 않고 { ok:false } 로
     // 응답한다 — ipcMain.handle 이 던지면 err.code 가 IPC 경계를 못 건너오기
     // 때문이다. 사용자가 친 내용은 이미 main 프로세스가 conflictBackup 으로
-    // 보관했으니(title+text 를 합친 전체 문자열로, split 이전의 attempt 와
-    // 같은 값이다) 여기서는 알리기만 한다.
-    showSaveFailure(attempt)
+    // title/text 둘 다 보관했으니 여기서는 알리기만 한다.
+    showSaveFailure(attemptTitle, attemptText)
     status.textContent = res.code === 'AUTH_REQUIRED' ? '재로그인 필요' : '저장 실패 — 편집본 보관됨'
     return
   }
   if (res.conflict) {
-    // 배지 툴팁에는 방금 쪼개 보낸 text 조각이 아니라 사용자가 화면에서 실제로
-    // 보고 있던 전체 문자열(attempt)을 보여준다 — res.sentText 는 이제
-    // title 이 빠진 본문 조각일 뿐이라 "내가 뭘 갖고 있었는지"를 온전히
-    // 보여주지 못한다.
-    showConflict(attempt)
-    body.value = joinTitleAndText(res.note.title, res.note.text) // 서버가 이긴 내용을 보여준다
+    // 배지 툴팁에는 방금 보낸 title/text 그대로 — 사용자가 화면에서 실제로
+    // 보고 있던 값이다.
+    showConflict(attemptTitle, attemptText)
+    title.value = res.note.title || '' // 서버가 이긴 내용을 보여준다
+    body.value = res.note.text || ''
+    savedTitle = title.value
     savedText = body.value
+    bookmarkText = currentBookmarkText() // 서버 쪽 내용으로 책갈피 문구도 다시 뽑는다
   } else {
     badge.classList.remove('show')
-    savedText = attempt
+    savedTitle = attemptTitle
+    savedText = attemptText
   }
   status.textContent = '저장됨'
 }
 
-body.addEventListener('input', () => {
+/** 제목/본문 어느 쪽이든 편집하면 같은 디바운스 타이머를 다시 건다 —
+ * 두 필드가 경쟁하는 별개의 타이머를 갖지 않는다. */
+function onEdit () {
   status.textContent = ''
+  // 저장 여부와 무관하게 지금 값으로 책갈피 문구를 즉시 갱신한다 — 저장
+  // 왕복을 기다리지 않아야 "치자마자 접기"에서도 방금 친 제목이 보인다.
+  bookmarkText = currentBookmarkText()
   clearTimeout(timer)
   timer = setTimeout(flush, DEBOUNCE_MS)
+}
+title.addEventListener('input', onEdit)
+body.addEventListener('input', onEdit)
+
+// 제목 칸에서 Enter 는 아무것도 저장/제출하지 않고 본문으로 포커스만 옮긴다.
+// <input type="text"> 는 애초에 줄바꿈을 넣을 수 없으므로(제목에 줄바꿈이
+// 없다는 규칙을 컨트롤 자체가 강제한다) 여기서 막을 "제출"은 없지만, 감싸는
+// <form> 이 없어도 브라우저마다 Enter 처리가 다를 수 있어 명시적으로 막는다.
+title.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return
+  e.preventDefault()
+  body.focus()
 })
 
 document.getElementById('close').addEventListener('click', async () => {
@@ -220,8 +263,8 @@ document.getElementById('close').addEventListener('click', async () => {
   clearTimeout(timer)
   // "타이머가 걸려 있었는가"는 미저장 편집의 정확한 신호가 아니다 (우클릭 →
   // 취소 경로는 타이머 없이도 미저장 편집을 남긴다). 실제로 서버에 반영된
-  // 마지막 텍스트와 다른지로 판단한다.
-  if (body.value !== savedText) {
+  // 마지막 제목/본문과 다른지로 판단한다 — 둘 중 하나만 바뀌어도 미저장이다.
+  if (title.value !== savedTitle || body.value !== savedText) {
     // flush() 는 실패해도 거절하지 않는다 — 실패하면 conflictBackup 에 이미
     // 보관한 뒤 돌아오므로, 성공 여부와 무관하게 닫아도 편집을 잃지 않는다.
     // 여기서 닫기를 막으면 사용자가 닫을 수 없는 창에 갇히므로 막지 않는다.
@@ -235,7 +278,7 @@ document.getElementById('fold').addEventListener('click', async () => {
   // 사라진다 — 여기서 먼저 저장하지 않으면 디바운스 대기 중이던 편집이
   // 조용히 사라진다. 타이머부터 끊어 뒤늦은 두 번째 저장을 막는다.
   clearTimeout(timer)
-  if (loaded && body.value !== savedText) {
+  if (loaded && (title.value !== savedTitle || body.value !== savedText)) {
     // flush() 는 실패해도 거절하지 않는다. 실패분은 main 이 conflictBackup 에
     // 보관하고 배지를 띄운다 — 배지는 DOM 에 그대로 남아 펼치면 다시 보인다.
     await flush()
@@ -289,6 +332,7 @@ document.addEventListener('contextmenu', async (e) => {
   // update_note 가 날아간다. 색상 변경도 같은 update_note 경로를 타므로
   // 똑같이 잠근다.
   loaded = false
+  title.readOnly = true
   body.readOnly = true
   colorToggle.disabled = true
   colorPicker.classList.remove('show')
@@ -300,7 +344,7 @@ document.addEventListener('contextmenu', async (e) => {
 window.keepSticky.onFlushRequest(async () => {
   clearTimeout(timer)
   try {
-    if (loaded && body.value !== savedText) await flush()
+    if (loaded && (title.value !== savedTitle || body.value !== savedText)) await flush()
   } finally {
     window.keepSticky.flushDone()
   }
@@ -316,18 +360,20 @@ window.keepSticky.noteId().then(async (id) => {
   const note = notes.find((n) => n.id === id)
   // 목록에 없는 id 도 실패다. 여기서 빈 문자열로 폴백하면 그게 곧 원본 삭제다.
   if (!note) throw new Error('목록에서 이 메모를 찾지 못했습니다')
-  // title 이 있으면 첫 줄로, 없으면 text 그대로. 저장 시 splitTitleAndText 가
-  // 이 문자열을 정확히 되돌려 쪼갠다(app/renderer/note-title.js 참고) — 그래야
-  // title 을 눈으로 보면서 고칠 수 있고, 고치지 않고 저장해도 내용이 새지 않는다.
-  body.value = joinTitleAndText(note.title, note.text)
+  // Keep 의 title/text 를 각 입력칸에 그대로 옮긴다 — 합치지 않는다. 왕복이
+  // 걱정될 이유가 없다: 저장도 이 두 필드를 그대로 되돌려 보낼 뿐이다.
+  title.value = note.title || ''
+  body.value = note.text || ''
+  savedTitle = title.value
   savedText = body.value
   // Keep 의 색 이름을 그대로 속성 값으로 심는다 (innerHTML 경로가 아니다).
   // note.html 에 없는 이름이면 어느 규칙에도 안 걸려 기본 노란색이 남는다.
   if (note.color) document.body.dataset.color = note.color
   markCurrentColor()
-  bookmarkText = note.title || (note.text || '').split('\n')[0] || ''
+  bookmarkText = currentBookmarkText()
   loaded = true
-  body.readOnly = false // 여기가 편집이 열리는 유일한 지점이다
+  title.readOnly = false // 여기가 편집이 열리는 유일한 지점이다
+  body.readOnly = false
   colorToggle.disabled = false // 색 변경도 불러오기가 끝나야 열리는 경로다
   status.textContent = ''
   // 접힘 통보가 불러오기보다 먼저 왔을 수 있다(재시작 복원). 이제 제목을
