@@ -15,6 +15,10 @@ contextBridge.exposeInMainWorld('keepSticky', {
   // 바탕화면에서만 내리는 것이며 Keep 메모를 지우는 경로는 여기 없다.
   visibleIds: () => ipcRenderer.invoke('notes:visibleIds'),
   applySelection: (ids) => ipcRenderer.invoke('notes:applySelection', ids),
+  // [완료] 는 반영이 끝나면 목록 창을 닫는다. 앱은 트레이에서 계속 살아 있고
+  // 트레이 아이콘으로 다시 연다. main 은 목록 창일 때만 이 요청을 받아준다 —
+  // 포스트잇은 자기 ✕(closeNote) 를 거쳐야 state.json 에 내린 것으로 남는다.
+  closeList: () => ipcRenderer.invoke('list:close'),
   // 포스트잇 ↔ 책갈피. 좌표 계산과 저장은 전부 main 프로세스가 한다.
   foldNote: (id) => ipcRenderer.invoke('notes:fold', id),
   unfoldNote: (id) => ipcRenderer.invoke('notes:unfold', id),
@@ -30,5 +34,13 @@ contextBridge.exposeInMainWorld('keepSticky', {
   // 종료/로그오프)에서도 미저장 편집을 저장할 마지막 기회다. 이벤트 객체는
   // 렌더러에 넘기지 않는다 — sender 를 통해 IPC 표면이 새어나가면 안 된다.
   onFlushRequest: (cb) => ipcRenderer.on('notes:flush', () => cb()),
-  flushDone: () => ipcRenderer.send('notes:flushed')
+  flushDone: () => ipcRenderer.send('notes:flushed'),
+  // 서체 설정. 저장은 언제나 main 이 한다(store.js 가 검증하고 state.json 에
+  // 쓴다). setFontSettings 는 실제로 저장된 값을 돌려주므로, 렌더러는 자기가
+  // 보낸 값이 아니라 돌아온 값을 화면에 입히면 된다.
+  getFontSettings: () => ipcRenderer.invoke('settings:getFonts'),
+  setFontSettings: (settings) => ipcRenderer.invoke('settings:setFonts', settings),
+  // 한 창에서 바꾼 설정이 다시 뜨지 않고도 모든 창에 반영되게 하는 통로.
+  // 이벤트 객체는 넘기지 않는다(onFoldState / onFlushRequest 와 같은 관례).
+  onFontSettings: (cb) => ipcRenderer.on('settings:fonts', (_e, settings) => cb(settings))
 })

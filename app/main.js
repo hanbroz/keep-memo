@@ -362,6 +362,38 @@ function showVersionMismatchDialog ({ message, detail }) {
 }
 
 /**
+ * Electron 이 기본으로 붙여 주는 메뉴 막대(File / Edit / View / Window / Help)를
+ * 없앤다. 이 앱은 그 항목을 하나도 쓰지 않는데, 460×620 짜리 목록 창에서는 그
+ * 한 줄이 목록 두 줄만큼을 잡아먹는다.
+ *
+ * 클립보드 단축키에 대해:
+ *
+ * Windows(그리고 Linux)에서 편집 가능한 요소 안의 Ctrl+C / Ctrl+V / Ctrl+X /
+ * Ctrl+A / Ctrl+Z 는 메뉴가 아니라 Chromium 렌더러가 직접 처리한다. 메뉴의
+ * { role: 'copy' } 항목은 그 동작을 메뉴에서도 부를 수 있게 해 주는 것일 뿐이고
+ * (Electron 문서의 webContents.copy() 와 같은 편집 명령이다), 그 항목이 없다고
+ * 키 입력이 사라지지는 않는다. 그래서 여기서 메뉴를 없애도 포스트잇의 제목
+ * 입력칸과 본문 textarea 에서 복사/붙여넣기는 그대로 동작한다.
+ *
+ * macOS 는 다르다. 그쪽에서는 Cmd+C 같은 키가 NSMenu 의 key equivalent 를 타고
+ * 전달되므로, 메뉴를 통째로 없애면 정말로 복사/붙여넣기가 죽는다. 이 앱은 지금
+ * Windows 전용(package.json 의 build.win)이지만, 나중에 누가 macOS 로 빌드했을
+ * 때 그 함정에 빠지지 않도록 거기서는 편집 역할만 남긴 최소 메뉴를 세운다.
+ * appMenu 를 같이 두는 이유: macOS 는 첫 번째 최상위 항목을 앱 메뉴로 쓰므로,
+ * 그것이 없으면 Edit 이 앱 메뉴 자리에 끌려 들어가 이름이 이상해진다.
+ */
+function applyMinimalMenu () {
+  if (process.platform !== 'darwin') {
+    Menu.setApplicationMenu(null)
+    return
+  }
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    { role: 'appMenu' },
+    { role: 'editMenu' }
+  ]))
+}
+
+/**
  * 트레이 아이콘을 만든다. 실패하면 던진다 — 부르는 쪽(ensureTray)이 처리한다.
  *
  * 아이콘 픽셀은 파일이 아니라 소스(tray-icon.js)의 base64 문자열에서 온다.
@@ -607,7 +639,25 @@ function hideNote (id) {
   }
 }
 
+/**
+ * 서체 설정이 바뀌었음을 살아 있는 모든 창에 알린다. 다시 띄우지 않고도
+ * 반영되게 하는 유일한 통로다. 지금은 목록 창 하나만 듣지만, 포스트잇이 같은
+ * onFontSettings 를 붙이면 그대로 같이 따라온다 — 여기에 더 손댈 것이 없다.
+ */
+function broadcastFontSettings (settings) {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue
+    const wc = win.webContents
+    if (!wc || wc.isDestroyed()) continue
+    wc.send('settings:fonts', settings)
+  }
+}
+
 app.whenReady().then(async () => {
+  // 기본 메뉴 제거는 창을 하나라도 만들기 전에 한다 — 최초 실행 설정 창과 로그인
+  // 창까지 포함해서다. 창이 생긴 뒤에 부르면 그 창들은 메뉴를 단 채로 뜬다.
+  applyMinimalMenu()
+
   store = new Store(path.join(app.getPath('userData'), 'state.json'))
   store.load()
 
@@ -692,6 +742,30 @@ app.whenReady().then(async () => {
     for (const id of toClose) hideNote(id)
     for (const id of toOpen) createNoteWindow(id)
     return { ok: true, opened: toOpen.length, closed: toClose.length }
+  })
+
+  // 목록 창의 [완료] 가 반영을 끝낸 뒤 마지막으로 부른다.
+  //
+  // 닫을 창을 listWindow 전역이 아니라 보낸 쪽(sender)에서 찾고, 그것이 정말
+  // 목록 창일 때만 닫는다. 이렇게 하면 이 핸들러가 listWindow 추적과 싸울 일이
+  // 없다 — 참조를 여기서 비우지 않고, 창이 실제로 사라질 때 createListWindow 가
+  // 걸어 둔 'closed' 가 (동일성까지 확인하고) 비운다. 포스트잇이 이 경로로
+  // 닫히는 것도 막는다: 포스트잇은 notes:close 를 거쳐야 state.json 에
+  // visible: false 로 남는다.
+  ipcMain.handle('list:close', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win || win !== listWindow || win.isDestroyed()) return { ok: false }
+    win.close()
+    return { ok: true }
+  })
+
+  // 서체 설정. 검증과 기본값은 전부 store(=font-settings.js)가 한다.
+  ipcMain.handle('settings:getFonts', () => store.getFontSettings())
+  ipcMain.handle('settings:setFonts', (_e, raw) => {
+    const saved = store.setFontSettings(raw)
+    store.save()
+    broadcastFontSettings(saved)
+    return saved
   })
 
   ipcMain.handle('notes:fold', (_e, id) => ({ ok: foldNote(id) }))

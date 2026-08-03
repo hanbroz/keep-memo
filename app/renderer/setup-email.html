@@ -7,7 +7,13 @@
   <style>
     /* 서체 토큰. list.html / note.html 과 같은 값이다. style-src 가
        'unsafe-inline' 뿐이라 공통 .css 파일을 <link> 로 못 부른다. 웹폰트도
-       쓰지 않는다 — 이 앱은 오프라인에서 떠야 한다. */
+       쓰지 않는다 — 이 앱은 오프라인에서 떠야 한다.
+
+       사용자가 고르는 서체 설정(목록 창의 [설정])은 이 창에 붙이지 않는다.
+       최초 실행 때 한 번 뜨는 창이고, 그 시점에는 설정 자체가 아직 없다.
+       붙일 일이 생기면 <script src="font-settings.js"> 한 줄과
+       applyFontSettings() 호출이면 된다 — 아래 --font-ui 를 손으로 고치는 것이
+       아니다. 그 함수가 --font-ui / --fs-title / --fs-body 를 덮어쓴다. */
     :root {
       --font-ui: system-ui, 'Segoe UI', 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif;
       --fs-xs: 12px;

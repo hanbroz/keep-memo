@@ -12,13 +12,26 @@
 
        한글은 Segoe UI 에 글리프가 없어 자동으로 Malgun Gothic 으로 떨어진다
        (CSS 폰트 대체는 글자 단위다). 즉 라틴 문자는 Segoe UI, 한글은 맑은
-       고딕이 되어 둘 다 제 모습으로 나온다. */
+       고딕이 되어 둘 다 제 모습으로 나온다.
+
+       --font-ui / --fs-title / --fs-body 세 개는 이제 사용자가 [설정] 에서
+       고르는 값이기도 하다. font-settings.js 의 applyFontSettings() 가
+       <html> 의 인라인 스타일로 덮어쓰므로 아래 값은 그 함수가 돌기 전까지의
+       기본값일 뿐이다. list.js 는 저장된 설정을 IPC 로 읽어오기 **전에** 먼저
+       DEFAULT_FONT_SETTINGS 를 한 번 입힌다 — 그래야 여기 --font-ui 를 세 벌
+       똑같이 유지하면서도 첫 그림부터 사용자가 고른 계열로 뜬다.
+       세 벌짜리 :root 가 갈라지지 않게 하는 장치가 바로 그 파일이다 —
+       포스트잇도 나중에 같은 <script src> 한 줄과 같은 함수로 붙는다. */
     :root {
       --font-ui: system-ui, 'Segoe UI', 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif;
       --fs-xs: 12px;   /* 날짜, 보조 설명 */
       --fs-sm: 13px;   /* 버튼, 상태 */
       --fs-md: 15px;   /* 본문 */
       --fs-lg: 18px;   /* 창 제목 */
+      --fs-title: 10pt; /* 사용자 설정 — 진짜 제목(소제목)에만 */
+      --fs-body: 9pt;   /* 사용자 설정 — 목록 행, 날짜, 버튼, 상태 */
+      /* 위 --fs-xs/sm/md/lg 는 세 벌을 같은 값으로 유지하려고 남겨 둔다. 이
+         창의 글자는 이제 전부 --fs-title / --fs-body 를 따른다. */
       --lh-body: 1.65;
       --lh-tight: 1.35;
       --ink: #1f2328;
@@ -32,7 +45,7 @@
       display: flex;
       flex-direction: column;
       font-family: var(--font-ui);
-      font-size: var(--fs-md);
+      font-size: var(--fs-body);
       line-height: var(--lh-body);
       color: var(--ink);
       background: #fff;
@@ -40,6 +53,16 @@
       word-break: keep-all;
       overflow-wrap: break-word;
     }
+
+    /* 검색 칸. 버튼은 없다 — 치는 대로 걸러진다. */
+    header { flex: none; padding: 10px 10px 8px; border-bottom: 1px solid var(--line); }
+    #search {
+      box-sizing: border-box; width: 100%;
+      font-family: inherit; font-size: var(--fs-body); line-height: 1.4;
+      padding: 8px 10px; border: 1px solid #cfd4d8; border-radius: 6px;
+      color: var(--ink); background: #fff;
+    }
+    #search:focus { outline: 2px solid #2f6feb; outline-offset: -1px; }
 
     main { flex: 1; overflow-y: auto; padding: 6px 10px 10px; }
     ul { list-style: none; margin: 0; padding: 0; }
@@ -54,34 +77,93 @@
       padding: 12px 10px; cursor: pointer;
     }
     .row input { width: 17px; height: 17px; margin: 0; flex: none; cursor: pointer; }
+    /* 목록의 노트 제목은 이 창에서 '제목'이 아니라 본문 항목이다 — 그래서
+       --fs-title 이 아니라 --fs-body 를 따른다(body 에서 물려받는다). */
     .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .date { flex: none; padding-right: 10px; color: var(--ink-dim); font-size: var(--fs-xs); }
-    .empty { padding: 24px 10px; color: var(--ink-dim); font-size: var(--fs-sm); }
+    /* 날짜도 같은 본문 크기를 쓰고, 위계는 색(--ink-dim)으로만 준다. */
+    .date { flex: none; padding-right: 10px; color: var(--ink-dim); font-size: var(--fs-body); }
+    .empty { padding: 24px 10px; color: var(--ink-dim); font-size: var(--fs-body); }
+
+    /* 서체 설정 패널. 별도 창이 아니라 이 창 안에 접혔다 펴진다 — 뒤의 목록이
+       그대로 보이므로 고른 글꼴/크기가 바로 눈에 들어온다. */
+    #settings {
+      flex: none; border-top: 1px solid var(--line);
+      padding: 12px 20px 14px; background: #fafbfc;
+    }
+    #settings[hidden] { display: none; }
+    /* 이 창에서 유일하게 '제목'다운 글자다. --fs-title 은 여기에만 쓴다. */
+    #settings-title {
+      margin: 0 0 10px; font-size: var(--fs-title); font-weight: 600;
+      line-height: var(--lh-tight);
+    }
+    .field { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+    .field > label { flex: none; width: 68px; color: var(--ink-dim); font-size: var(--fs-body); }
+    .field select, .field input {
+      font-family: inherit; font-size: var(--fs-body); line-height: 1.4;
+      padding: 5px 8px; border: 1px solid #cfd4d8; border-radius: 6px;
+      background: #fff; color: var(--ink);
+    }
+    .field select { flex: 1; min-width: 0; }
+    .field input[type="number"] { width: 78px; }
+    .unit { color: var(--ink-dim); font-size: var(--fs-body); }
+    .field-actions { display: flex; gap: 8px; margin-top: 12px; }
 
     footer {
+      flex: none;
       display: flex; align-items: center; gap: 12px;
       padding: 14px 20px; border-top: 1px solid var(--line);
     }
     button {
-      font-family: inherit; font-size: var(--fs-sm); line-height: 1.4;
+      font-family: inherit; font-size: var(--fs-body); line-height: 1.4;
       padding: 8px 16px; border: 1px solid #cfd4d8; border-radius: 6px;
       background: #f7f8f9; color: var(--ink); cursor: pointer;
     }
     button:hover { background: #eef0f2; }
     #apply { border-color: #2f6feb; background: #2f6feb; color: #fff; font-weight: 600; }
     #apply:hover { background: #2560d0; }
-    #status { flex: 1; font-size: var(--fs-xs); color: var(--ink-dim); }
+    /* flex: 1 이 남는 자리를 전부 먹으므로, 뒤에 오는 [설정]은 줄 오른쪽 끝에 선다. */
+    #status { flex: 1; min-width: 0; font-size: var(--fs-body); color: var(--ink-dim); }
   </style>
 </head>
 <body>
+  <header>
+    <input id="search" type="search" placeholder="메모 검색" aria-label="메모 검색"
+           autocomplete="off" autocorrect="off" spellcheck="false">
+  </header>
   <main>
     <ul id="list"></ul>
   </main>
+  <section id="settings" hidden aria-labelledby="settings-title">
+    <h2 id="settings-title">서체 설정</h2>
+    <div class="field">
+      <label for="font-family">글꼴</label>
+      <select id="font-family"></select>
+    </div>
+    <div class="field">
+      <label for="font-title-size">제목 크기</label>
+      <!-- min/max 는 font-settings.js 의 FONT_PT_RANGE 에서 JS 가 채운다.
+           여기 숫자를 또 적으면 두 곳이 언젠가 갈라진다. -->
+      <input id="font-title-size" type="number" step="1" inputmode="numeric">
+      <span class="unit">pt</span>
+    </div>
+    <div class="field">
+      <label for="font-body-size">본문 크기</label>
+      <input id="font-body-size" type="number" step="1" inputmode="numeric">
+      <span class="unit">pt</span>
+    </div>
+    <div class="field-actions">
+      <button id="font-reset" type="button">기본값</button>
+      <button id="settings-close" type="button">닫기</button>
+    </div>
+  </section>
   <footer>
-    <button id="apply">완료</button>
-    <button id="new">+ 새 메모</button>
-    <span id="status"></span>
+    <button id="apply" type="button">완료</button>
+    <button id="new" type="button">+ 새 메모</button>
+    <span id="status" role="status"></span>
+    <button id="settings-toggle" type="button" aria-expanded="false" aria-controls="settings">설정</button>
   </footer>
+  <script src="font-settings.js"></script>
+  <script src="note-filter.js"></script>
   <script src="list.js"></script>
 </body>
 </html>

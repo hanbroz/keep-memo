@@ -1,6 +1,12 @@
 'use strict'
 const fs = require('node:fs')
 const path = require('node:path')
+// 서체 설정의 기본값과 검증은 렌더러와 한 벌만 있어야 한다. 창마다 따로 판단하면
+// state.json 에 든 값과 화면에 보이는 값이 언젠가 갈라진다. 이 모듈은 Electron
+// 을 건드리지 않는 순수 함수뿐이라 main 프로세스에서 그대로 require 된다
+// (위치가 renderer/ 인 이유는 그 파일의 주석에 있다 — list.html 이 <script src>
+// 로도 같은 파일을 부른다).
+const { normalizeFontSettings } = require('./renderer/font-settings')
 
 // 포스트잇 기본 크기. Phase 1 에서는 고정이고, Phase 2 의 드래그 리사이즈가
 // 같은 필드를 그대로 쓴다.
@@ -17,13 +23,15 @@ const DEFAULT_NOTE_STATE = {
 class Store {
   constructor (filePath) {
     this.filePath = filePath
-    this.data = { notes: {}, email: null }
+    this.data = { notes: {}, email: null, fonts: null }
   }
 
   load () {
     try {
       const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf8'))
-      this.data = { notes: parsed.notes || {}, email: parsed.email || null }
+      // fonts 는 null 로 둔다 — "저장한 적 없음"과 "저장했는데 비었음"을 구별할
+      // 이유가 없고, getFontSettings() 가 어느 쪽이든 기본값으로 채워 준다.
+      this.data = { notes: parsed.notes || {}, email: parsed.email || null, fonts: parsed.fonts || null }
     } catch (err) {
       // 파일이 아예 없는 것(ENOENT)은 첫 실행이므로 조용히 넘어간다.
       // 그 외(손상된 JSON, 권한 오류, 백신의 파일 잠금 등)는 진짜 환경
@@ -33,7 +41,7 @@ class Store {
       if (err.code !== 'ENOENT') {
         console.warn(`상태 파일을 읽지 못했다 (${err.code}): ${this.filePath}`)
       }
-      this.data = { notes: {}, email: null }
+      this.data = { notes: {}, email: null, fonts: null }
     }
     return this.data
   }
@@ -67,6 +75,24 @@ class Store {
 
   setEmail (email) {
     this.data.email = email
+  }
+
+  // 서체 설정(글꼴 / 제목 크기 / 본문 크기). email 과 같은 자리(state.json 의
+  // 최상위)에 산다. 개인정보가 아니고 노트별 값도 아니므로 notes 안에 넣지
+  // 않는다.
+  //
+  // 읽을 때도 쓸 때도 normalizeFontSettings 를 지난다. 그래서
+  //  - 저장한 적이 없으면(null) 기본값이 나오고,
+  //  - 사람이 state.json 을 손으로 고쳐 이상한 값을 넣어도 화면까지 오지 않으며,
+  //  - 파일에는 언제나 검증을 지난 값만 남는다.
+  getFontSettings () {
+    return normalizeFontSettings(this.data.fonts)
+  }
+
+  /** 저장한(=검증을 지난) 값을 그대로 돌려준다. 부르는 쪽이 화면에 그대로 쓴다. */
+  setFontSettings (raw) {
+    this.data.fonts = normalizeFontSettings(raw)
+    return this.data.fonts
   }
 }
 
