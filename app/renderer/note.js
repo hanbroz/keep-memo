@@ -5,6 +5,9 @@ const DEBOUNCE_MS = 1500
 // 글자부터는 새 단계다 — 글자마다 한 단계씩 쌓으면 Ctrl+Z 스무 번이 낱말 하나를
 // 지우고, 반대로 영영 묶어 두면 한 번에 문단 전체가 날아간다.
 const TYPING_GROUP_MS = 1200
+// 쉬지 않고 쳐도 이만큼마다 묶음을 끊는다. 쉼만으로 끊으면 한 문단을 내리
+// 치는 동안 묶음이 영영 이어져 Ctrl+Z 한 번에 그 전부가 사라진다.
+const TYPING_GROUP_CHARS = 40
 // 책갈피에 세로로 그릴 글자 수 상한. 넘치면 잘라낸다 — 화면 가장자리에 붙는
 // 띠는 길어질 수 없고, 길어지면 아래 책갈피들을 밀어낸다.
 const BOOKMARK_MAX_CHARS = 10
@@ -47,6 +50,19 @@ let focusedLine = 0
 // 쉬거나, 다른 줄로 옮기거나, 줄을 더하고 지우면 세대가 올라가 묶음이 끊긴다.
 let typingGroup = 0
 let typingGroupTimer = null
+// 지금 묶음에 들어간 글자 수. 시간만으로 끊으면 쉬지 않고 친 한 문단이 통째로
+// 한 단계가 되어 Ctrl+Z 한 번에 날아간다.
+let typingRunLength = 0
+// **한글 IME 조합이 진행 중인가.** 조합 중에는 줄들을 다시 그리지도, 값을
+// 대신 써 넣지도 않는다 — 그러면 조합 중이던 입력칸이 통째로 사라져 아직
+// 확정되지 않은 글자가 사라지거나 두 번 들어간다. keydown 은 이벤트가 직접
+// 알려주지만(e.isComposing), 버튼 클릭이나 붙여넣기처럼 키보드를 거치지 않는
+// 경로는 알 길이 없어서 따로 들고 있어야 한다.
+let composing = false
+// 캐럿이 지금 본문 안에 있는가. [체크] 버튼처럼 포커스 밖에서 오는 명령이
+// "지금 이 줄"을 믿어도 되는지 가른다 — 제목 칸에서 누른 [체크] 가 예전에
+// 본문에서 마지막으로 있던 줄을 건드리면 안 된다.
+let caretInBody = false
 // 본문을 실제로 Keep 에서 받아왔는가. 이 값이 false 인 동안 저장 경로는 완전히
 // 닫혀 있다 — 비어 있는 본문으로 update_note 를 부르면 Keep 의 진짜 내용이
 // 통째로 지워지고, Keep 에는 노트별 버전 기록이 없어 되돌릴 방법이 없다.
@@ -254,6 +270,9 @@ function buildLineRow (line) {
  * 편집 잠금은 지금의 loaded 를 그대로 따른다.
  */
 function renderLines (focusIndex, caret) {
+  // 통째로 비우면 스크롤 자리가 맨 위로 튄다. 긴 메모의 한가운데에서 Enter 를
+  // 눌렀을 때 화면이 위로 뛰지 않게 자리를 기억했다가 되돌린다.
+  const scrollTop = body.scrollTop
   lineRows = []
   body.textContent = ''
   for (const line of noteLines) {
@@ -264,6 +283,7 @@ function renderLines (focusIndex, caret) {
   // 높이 맞추기는 DOM 에 붙인 **뒤**여야 한다. 붙기 전에는 너비가 0 이라
   // scrollHeight 가 접힘을 반영하지 못한다.
   growAllLines()
+  body.scrollTop = scrollTop
   if (Number.isInteger(focusIndex)) {
     focusLine(focusIndex, caret)
   } else {
@@ -346,12 +366,25 @@ function restoreSnapshot (state) {
 function breakTypingGroup () {
   clearTimeout(typingGroupTimer)
   typingGroup += 1
+  typingRunLength = 0
 }
 
-/** 이 줄에서 이어 치는 동안 같은 값으로 유지되는 묶음 열쇠. */
+/**
+ * 이 줄에서 이어 치는 동안 같은 값으로 유지되는 묶음 열쇠.
+ *
+ * 끊는 조건이 둘이다. 하나는 쉼(TYPING_GROUP_MS), 다른 하나는 글자 수
+ * (TYPING_GROUP_CHARS)다. 시간만으로 끊으면 쉬지 않고 친 한 문단이 통째로 한
+ * 단계가 되어 Ctrl+Z 한 번에 날아간다 — 위 상수의 주석이 경계하는 바로 그
+ * 실패다. 쉼을 재는 타이머는 글자마다 다시 걸리므로 혼자서는 그것을 막지 못한다.
+ */
 function typingKeyFor (index) {
   clearTimeout(typingGroupTimer)
-  typingGroupTimer = setTimeout(() => { typingGroup += 1 }, TYPING_GROUP_MS)
+  typingGroupTimer = setTimeout(() => { typingGroup += 1; typingRunLength = 0 }, TYPING_GROUP_MS)
+  typingRunLength += 1
+  if (typingRunLength > TYPING_GROUP_CHARS) {
+    typingGroup += 1
+    typingRunLength = 1
+  }
   return `typing:${index}:${typingGroup}`
 }
 
@@ -421,7 +454,11 @@ function splitLine (index) {
 
   const start = Math.min(input.selectionStart, input.selectionEnd)
   const end = Math.max(input.selectionStart, input.selectionEnd)
-  noteLines[index] = { ...line, text: input.value.slice(0, start) }
+  const head = input.value.slice(0, start)
+  // 글자가 하나도 안 남은 항목은 체크된 채로 두지 않는다. 항목 맨 앞에서 Enter 를
+  // 누르면 위에 빈 줄이 하나 생기는데, 그것이 취소선 그어진 빈 체크 항목으로
+  // 남으면 Keep 에도 "- [x] " 만 든 줄로 저장된다.
+  noteLines[index] = { ...line, checked: head === '' ? false : line.checked, text: head }
   noteLines.splice(index + 1, 0, { kind: line.kind, checked: false, text: input.value.slice(end) })
   breakTypingGroup()
   renderLines(index + 1, 0)
@@ -481,8 +518,11 @@ function backspaceAtLineStart (index) {
  * 캐럿이 있는 줄이 무엇인지가 이긴다. 캐럿은 이어붙인 자리에 그대로 있다.
  */
 function deleteAtLineEnd (index) {
-  if (index >= noteLines.length - 1) return
+  // 순서가 중요하다. 진짜 List 노트인지를 **먼저** 본다 — 마지막 줄 끝에서만
+  // 조용히 아무 말도 없이 끝나면, 같은 키가 같은 노트에서 자리에 따라 이유를
+  // 말하기도 하고 안 하기도 한다.
   if (isNativeList) { refuseStructuralEdit(); return }
+  if (index >= noteLines.length - 1) return
   const line = noteLines[index]
   const caret = line.text.length
   noteLines[index] = { ...line, text: line.text + noteLines[index + 1].text }
@@ -521,6 +561,15 @@ function toggleLineKind () {
     return
   }
   if (noteLines.length === 0) return
+  // 캐럿이 본문에 없으면(제목 칸에 있거나, 이 창에서 아직 아무 줄도 누른 적이
+  // 없으면) focusedLine 은 "지금 이 줄"이 아니다. 그 값을 믿고 바꾸면 사용자가
+  // 보고 있지도 않은 줄이 바뀌고 포커스까지 그리로 끌려간다.
+  if (!caretInBody) {
+    status.textContent = '체크리스트로 만들 줄에 먼저 커서를 두세요'
+    return
+  }
+  // 조합 중에는 다시 그리지 않는다. 만들던 글자가 사라진다.
+  if (composing) return
   const index = Math.max(0, Math.min(focusedLine, noteLines.length - 1))
   const row = lineRows[index]
   const caret = row && document.activeElement === row.input ? row.input.selectionStart : null
@@ -531,6 +580,52 @@ function toggleLineKind () {
   breakTypingGroup()
   renderLines(index, Number.isInteger(caret) ? caret : line.text.length)
   noteChanged(null)
+}
+
+/**
+ * 화면에 아직 서버까지 못 간 편집이 남아 있으면 디바운스 타이머를 다시 건다.
+ * 저장 경로가 한 번 끊긴 자리(충돌 반영 뒤, 삭제 확인 취소 뒤)에서 부른다 —
+ * 다시 걸지 않으면 그 편집은 창을 닫을 때까지 디스크에 닿지 않는다.
+ */
+function rearmIfUnsaved () {
+  if (!loaded || !hasUnsavedEdits()) return
+  clearTimeout(timer)
+  timer = setTimeout(flush, DEBOUNCE_MS)
+}
+
+/**
+ * 충돌이 났다. 다른 기기의 편집이 이겼으므로 서버가 들고 있는 내용을 화면에
+ * 반영한다. text 노트와 진짜 List 노트가 같은 함수를 쓴다 — 두 벌로 나뉘면
+ * 아래 세 가지 조심 중 하나가 한쪽에서만 지켜지는 날이 온다.
+ *
+ * 1. **기다리는 동안 사용자가 더 고친 제목은 지우지 않는다.** 서버에 져서
+ *    버려진 것은 우리가 보낸 attemptTitle 뿐이고, 그 뒤에 친 글자는 아직 아무
+ *    데도 보낸 적이 없다. 게다가 제목은 되돌리기 기록에 없어서(제목 칸은
+ *    브라우저의 기본 되돌리기를 쓴다) 여기서 덮으면 되찾을 길이 아예 없다.
+ *    savedTitle 은 언제나 **서버가 들고 있는 값**으로 둔다. 그래야 화면의
+ *    제목이 그와 다를 때 hasUnsavedEdits() 가 참이 되어 다음 저장에 실려 간다.
+ * 2. **캐럿을 되돌려 놓는다.** 줄들을 다시 그리면 포커스가 사라지는데,
+ *    keydown 리스너는 #body 에 걸려 있어서 포커스가 그 밖으로 나가면 Ctrl+Z 가
+ *    닿지 않는다 — 아래에서 되돌리기 칸을 하나 남기는 의미가 없어진다.
+ * 3. **서버 내용도 되돌리기 기록에 한 칸 남긴다.** Ctrl+Z 로 내가 쓰던 본문으로
+ *    돌아갈 수 있어야 하고, 그 상태에서 다시 저장하면 내 것이 이긴다.
+ */
+function applyServerWin (serverNote) {
+  const serverTitle = (serverNote && serverNote.title) || ''
+  if (title.value === savedTitle) title.value = serverTitle
+  savedTitle = serverTitle
+
+  const activeRow = lineRows[focusedLine]
+  const hadCaret = !!activeRow && document.activeElement === activeRow.input
+  const caretAt = hadCaret ? activeRow.input.selectionStart : null
+  const caretLine = focusedLine
+
+  if (isNativeList) setLinesFromItems(serverNote && serverNote.items)
+  else setLinesFromBody((serverNote && serverNote.text) || '')
+
+  if (hadCaret) focusLine(caretLine, caretAt)
+  pushHistory(null)
+  bookmarkText = currentBookmarkText() // 서버 쪽 내용으로 책갈피 문구도 다시 뽑는다
 }
 
 /**
@@ -790,14 +885,9 @@ async function flushChecklist (attemptTitle) {
   }
   if (res.conflict) {
     showConflict(attemptTitle, attemptPlain)
-    title.value = res.note.title || '' // 서버가 이긴 내용을 보여준다
-    setLinesFromItems(res.note.items)
-    // 서버가 이긴 내용도 되돌리기 기록에 한 칸 남긴다 — Ctrl+Z 로 내가 쓰던
-    // 내용으로 돌아갈 수 있어야 한다(그 상태에서 다시 저장하면 내 것이 이긴다).
-    pushHistory(null)
-    savedTitle = title.value
+    applyServerWin(res.note)
     savedItemsSig = checklistSignature(currentItems())
-    bookmarkText = currentBookmarkText()
+    rearmIfUnsaved()
   } else {
     badge.classList.remove('show')
     savedTitle = attemptTitle
@@ -839,14 +929,9 @@ async function flush () {
     // 배지 툴팁에는 방금 보낸 title/text 그대로 — 사용자가 화면에서 실제로
     // 보고 있던 값이다.
     showConflict(attemptTitle, attemptText)
-    title.value = res.note.title || '' // 서버가 이긴 내용을 보여준다
-    setLinesFromBody(res.note.text || '')
-    // 서버가 이긴 내용도 되돌리기 기록에 한 칸 남긴다 — Ctrl+Z 로 내가 쓰던
-    // 내용으로 돌아갈 수 있어야 한다(그 상태에서 다시 저장하면 내 것이 이긴다).
-    pushHistory(null)
-    savedTitle = title.value
+    applyServerWin(res.note)
     savedText = currentBodyText()
-    bookmarkText = currentBookmarkText() // 서버 쪽 내용으로 책갈피 문구도 다시 뽑는다
+    rearmIfUnsaved()
   } else {
     badge.classList.remove('show')
     savedTitle = attemptTitle
@@ -863,9 +948,23 @@ function onEdit () {
   // 왕복을 기다리지 않아야 "치자마자 접기"에서도 방금 친 제목이 보인다.
   bookmarkText = currentBookmarkText()
   clearTimeout(timer)
+  // **한글 조합 중에는 타이머를 걸지 않는다.** 두 가지를 한꺼번에 막는다:
+  // 반쯤 만들어진 글자를 Keep 에 보내지 않는 것, 그리고 그 저장의 응답이
+  // 충돌이었을 때 줄들을 다시 그리면서 조합 중이던 입력칸을 없애 버리는 것.
+  // (조합 중에도 input 이벤트는 계속 오므로 이 자리를 반드시 지난다.)
+  // 조합이 끝나면 compositionend 가 다시 부른다.
+  if (composing) return
   timer = setTimeout(flush, DEBOUNCE_MS)
 }
 title.addEventListener('input', onEdit)
+// 제목 칸의 조합도 같은 깃발을 쓴다. 본문처럼 다시 그릴 일은 없지만, 반쯤
+// 만들어진 글자가 디바운스 타이머에 걸려 Keep 으로 나가는 것은 똑같이 막아야
+// 한다. (포커스는 제목과 본문 중 한 곳에만 있으므로 둘이 다투지 않는다.)
+title.addEventListener('compositionstart', () => { composing = true })
+title.addEventListener('compositionend', () => {
+  composing = false
+  if (hasUnsavedEdits()) onEdit()
+})
 
 // 제목 칸에서 Enter 는 아무것도 저장/제출하지 않고 본문 첫 줄로 포커스만 옮긴다.
 // <input type="text"> 는 애초에 줄바꿈을 넣을 수 없으므로(제목에 줄바꿈이
@@ -888,7 +987,45 @@ title.addEventListener('keydown', (e) => {
 
 body.addEventListener('focusin', (e) => {
   const index = lineRows.findIndex((row) => row.input === e.target || row.check === e.target)
-  if (index >= 0) focusedLine = index
+  if (index >= 0) {
+    focusedLine = index
+    caretInBody = true
+  }
+})
+
+// 포커스가 본문 **밖으로** 나갔는지 본다. relatedTarget 이 다음에 포커스를 받는
+// 요소다 — 그것이 여전히 본문 안이면 줄 사이를 옮긴 것뿐이다.
+// 이 한 줄이 없으면 focusedLine 이 "본문에서 마지막으로 있던 줄"을 영영 가리켜,
+// 제목 칸에서 누른 [체크] 가 엉뚱한 줄을 바꾼다.
+body.addEventListener('focusout', (e) => {
+  if (e.relatedTarget && body.contains(e.relatedTarget)) return
+  // [체크] 는 예외다. 그 버튼은 "방금까지 있던 줄"에 하는 일이므로, 그리로
+  // 포커스가 넘어간 것은 본문을 떠난 것으로 치지 않는다. (조합 중에는 일부러
+  // 포커스가 넘어가게 두는데 — 아래 lineToggle 의 mousedown 참고 — 그때
+  // caretInBody 가 내려가면 버튼이 제 줄을 못 찾는다.)
+  if (e.relatedTarget === lineToggle) { composing = false; return }
+  caretInBody = false
+  // 조합 중에 포커스가 빠져나가면 브라우저가 조합을 확정하고 compositionend 를
+  // 보낸다. 그래도 여기서 한 번 더 내려 둔다 — 이 깃발이 참으로 굳으면 디바운스
+  // 저장이 다시 걸리지 않는다(미저장 편집 자체는 닫을 때 hasUnsavedEdits 가
+  // 잡으므로 잃지는 않지만, 자동 저장이 멈추는 것은 그것대로 나쁘다).
+  composing = false
+})
+
+// 한글 조합의 시작과 끝. 이 두 줄이 아래 여러 곳의 "조합 중에는 다시 그리지
+// 않는다" 가드를 먹인다.
+body.addEventListener('compositionstart', () => { composing = true })
+body.addEventListener('compositionend', (e) => {
+  composing = false
+  // 조합 중이라 미뤄 둔 일이 둘 있다.
+  //  1) 값 안에 줄바꿈이 들어온 경우의 정리(아래 input 핸들러의 안전망).
+  //  2) 조합 중에는 걸지 않은 디바운스 저장.
+  const index = lineIndexOfInput(e.target)
+  if (index >= 0 && !isNativeList && noteLines[index].text.includes('\n')) {
+    replaceLineWithText(index, serializeNoteLine(noteLines[index]), 0)
+    return // replaceLineWithText 가 noteChanged 로 저장까지 다시 건다
+  }
+  if (hasUnsavedEdits()) onEdit()
 })
 
 // 입력칸 **바깥**을 눌렀을 때. 본문이 textarea 하나였을 때는 어디를 눌러도
@@ -897,6 +1034,10 @@ body.addEventListener('focusin', (e) => {
 // 반응을 메운다.
 body.addEventListener('mousedown', (e) => {
   if (lineRows.length === 0) return
+  // 조합 중에는 나서지 않는다. 아래에서 기본 동작을 막으면 조합을 확정시킬
+  // 포커스 이동이 일어나지 않는데, 그 상태로 focusLine() 이 캐럿을 옮기면
+  // 만들던 글자가 사라진다. 그냥 두면 브라우저가 조합을 확정하고 끝낸다.
+  if (composing) return
   // 입력칸이나 체크박스를 바로 눌렀으면 브라우저가 알아서 한다.
   if (lineRows.some((row) => row.input === e.target || row.check === e.target)) return
   // 스크롤막대를 눌렀을 수도 있다(#body 는 스크롤된다). 여기서 기본 동작을
@@ -926,9 +1067,20 @@ body.addEventListener('input', (e) => {
   // 줄바꿈이 들어올 일이 없어야 하지만, 끌어놓기처럼 우리가 세지 않은 경로가
   // 남아 있을 수 있다. 남겨 두면 한 줄의 값 안에 줄바꿈이 숨어 화면(줄 하나)과
   // 저장본(줄 여럿)이 달라진다.
-  if (!isNativeList && line.text.includes('\n')) {
-    replaceLineWithText(index, serializeNoteLine(line), 0)
-    return
+  //
+  // 조합 중이면 미룬다 — 여기서 다시 그리면 만들던 글자가 사라진다.
+  // compositionend 가 곧바로 이어받는다.
+  if (line.text.includes('\n') && !e.isComposing && !composing) {
+    if (isNativeList) {
+      // 진짜 List 노트에서는 줄을 나눌 수 없다. 그렇다고 줄바꿈을 항목 글자
+      // 안에 남기면 화면(한 줄)과 Keep 에 저장되는 것이 달라진다 — 눕힌다.
+      line.text = line.text.replace(/\n/g, ' ')
+      e.target.value = line.text
+      growLine(e.target)
+    } else {
+      replaceLineWithText(index, serializeNoteLine(line), 0)
+      return
+    }
   }
 
   // 마크다운식 자동 변환. 평범한 글줄 맨 앞에 표식 여섯 글자를 다 치면 그 자리에서
@@ -1068,7 +1220,15 @@ body.addEventListener('paste', (e) => {
 
 // [체크] 버튼. mousedown 의 기본 동작을 막아 캐럿이 있던 줄에서 포커스가
 // 빠져나가지 않게 한다 — 그래야 "지금 이 줄"이 버튼을 누르는 순간에도 그대로다.
-lineToggle.addEventListener('mousedown', (e) => { e.preventDefault() })
+//
+// **조합 중일 때만 막지 않는다.** 막으면 조합이 확정되지 않은 채로 남고, 이어지는
+// click 이 줄을 다시 그려 만들던 글자를 지운다. 포커스가 빠져나가게 두면 브라우저가
+// 조합을 확정하고 compositionend 를 보내므로, click 이 올 때는 이미 안전하다
+// (그때도 focusedLine 은 그대로다 — 그 값은 focusin 에서만 바뀐다).
+lineToggle.addEventListener('mousedown', (e) => {
+  if (composing) return
+  e.preventDefault()
+})
 lineToggle.addEventListener('click', () => { toggleLineKind() })
 
 document.getElementById('close').addEventListener('click', async () => {
@@ -1254,7 +1414,14 @@ async function trashCurrentNote () {
   // 순서 보장 없이 경합할 수 있다. close 핸들러처럼 여기서도 제일 먼저
   // 타이머를 끊는다.
   clearTimeout(timer)
-  if (!confirm('정말로 삭제하시겠습니까?\n\nKeep 휴지통으로 보냅니다. 7일 안에는 Keep 에서 복구할 수 있습니다.')) return
+  if (!confirm('정말로 삭제하시겠습니까?\n\nKeep 휴지통으로 보냅니다. 7일 안에는 Keep 에서 복구할 수 있습니다.')) {
+    // 취소했다. 위에서 끊은 타이머를 도로 걸어 준다 — 안 걸면 우클릭 한 번에
+    // 자동 저장이 조용히 멈춘 채로 남는다. (미저장 편집 자체는 ✕/접기/종료가
+    // hasUnsavedEdits() 로 잡으므로 잃지는 않지만, 그때까지 디스크에 아무것도
+    // 남지 않는 것은 그것대로 나쁘다.)
+    rearmIfUnsaved()
+    return
+  }
 
   trashing = true
   // 저장 경로를 **요청을 보내기 전에** 잠근다. 이 순서가 중요하다: trash 가
@@ -1360,7 +1527,12 @@ window.keepSticky.noteId().then(async (id) => {
   // 여기가 편집이 열리는 유일한 지점이다. 색 변경([모양] 패널의 스와치)과
   // [삭제] 도 같이 열린다 — 둘 다 "이 메모를 실제로 받아왔다"를 전제로 한다.
   setEditingEnabled(true)
-  status.textContent = ''
+  // 항목이 하나도 없는 List 노트는 캐럿을 놓을 줄조차 없다(text 노트는
+  // parseNoteLines 가 언제나 줄 하나를 보장하지만 항목에는 그런 바닥이 없고,
+  // 줄을 더할 수도 없다). 빈 화면만 보여주고 끝내지 않는다.
+  status.textContent = isNativeList && noteLines.length === 0
+    ? '항목이 없는 체크리스트입니다 — 항목은 휴대폰 Keep 앱에서 추가할 수 있습니다'
+    : ''
   // 접힘 통보가 불러오기보다 먼저 왔을 수 있다(재시작 복원). 이제 제목을
   // 알았으니 책갈피 글자를 제대로 다시 그린다.
   applyFoldUI()
