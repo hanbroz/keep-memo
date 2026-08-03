@@ -41,10 +41,6 @@
       overflow-wrap: break-word;
     }
 
-    header { padding: 18px 20px 14px; border-bottom: 1px solid var(--line); }
-    h1 { margin: 0; font-size: var(--fs-lg); line-height: var(--lh-tight); font-weight: 600; }
-    .hint { margin: 6px 0 0; font-size: var(--fs-xs); line-height: var(--lh-body); color: var(--ink-dim); }
-
     main { flex: 1; overflow-y: auto; padding: 6px 10px 10px; }
     ul { list-style: none; margin: 0; padding: 0; }
     li { display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--line); }
@@ -78,18 +74,6 @@
   </style>
 </head>
 <body>
-  <header>
-    <h1>Keep 메모</h1>
-    <p class="hint">체크한 메모가 바탕화면에 뜹니다. 체크를 풀면 바탕화면에서만
-       내려가고 Keep 메모는 그대로 남습니다.</p>
-    <!-- 이 창을 닫아도 앱이 살아 있다는 사실은 화면 어디에도 안 적혀 있으면
-         알 수가 없다. Windows 11 은 새 트레이 아이콘을 기본으로 숨김 영역(^)에
-         넣기 때문에, 아이콘이 있다는 것조차 모른 채 "앱이 사라졌다"고 느끼기
-         쉽다. 그래서 여기서 한 번 알려 준다. -->
-    <p class="hint">이 창을 닫아도 앱은 종료되지 않습니다. 작업 표시줄 오른쪽
-       알림 영역(숨겨져 있으면 ^ 를 누르세요)의 아이콘에서 이 목록을 다시 열거나
-       앱을 종료할 수 있습니다.</p>
-  </header>
   <main>
     <ul id="list"></ul>
   </main>
