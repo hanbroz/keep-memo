@@ -1,7 +1,7 @@
 'use strict'
 const path = require('node:path')
 const electron = require('electron')
-const { app, BrowserWindow, ipcMain, session, dialog } = electron
+const { app, BrowserWindow, ipcMain, session, dialog, Tray, Menu, nativeImage } = electron
 // screen 모듈은 app 의 ready 이후에만 쓸 수 있다. 위에서 같이 구조 분해하면
 // 모듈 적재 시점(= ready 이전)에 건드리게 되므로, 쓸 때 꺼내 쓴다. 이 게터를
 // 부르는 코드는 전부 ready 이후 경로(접기/펼치기/재배치)에만 있다.
@@ -13,6 +13,8 @@ const { resolveSidecarCommand } = require('./sidecar-path')
 const { validateEmail } = require('./email-validate')
 const { bookmarkBounds, BOOKMARK } = require('./bookmark-layout')
 const { reconcileSelection } = require('./selection-reconcile')
+const { trayMenuTemplate, TRAY_TOOLTIP } = require('./tray-menu')
+const { TRAY_ICON_DATA_URL } = require('./tray-icon')
 
 const PRELOAD = path.join(__dirname, 'preload.js')
 // 창을 닫기 전에 렌더러의 마지막 저장을 기다려 주는 시간. 응답 없는(혹은
@@ -28,6 +30,17 @@ let store = null
 let accountEmail = null
 let sidecarStopped = false
 let quitTeardownStarted = false
+// 목록 창은 한 장뿐이다. 두 장이 뜨면 각자 다른 체크 상태를 들고 있다가
+// 나중에 [완료]를 누른 쪽이 앞선 쪽의 선택을 덮어쓴다.
+let listWindow = null
+// 트레이 아이콘. **반드시 모듈 수명 동안 살아 있는 변수여야 한다.** Tray 를
+// 만든 함수의 지역 변수로만 들고 있으면 GC 가 수거하면서 몇 분 뒤 아이콘이
+// 소리 없이 사라진다 — 그러면 앱에 닿을 길이 없어져 지금 고치는 바로 그 버그로
+// 되돌아간다.
+let tray = null
+// 사이드카와 IPC 핸들러 등록이 모두 끝났는가. 트레이는 그보다 먼저 만들어지므로
+// (아래 whenReady 의 주석 참고) 준비되기 전에 눌릴 수 있다.
+let startupComplete = false
 const noteWindows = new Map() // noteId -> BrowserWindow
 const flushWaiters = new Map() // webContents.id -> 대기 해제 함수
 
@@ -180,7 +193,18 @@ async function ensureAuth () {
   return true
 }
 
+/**
+ * 목록 창을 띄운다. 이미 있으면 새로 만들지 않고 앞으로 가져오기만 한다
+ * (createNoteWindow 와 같은 관례다). 트레이에서 몇 번을 눌러도 창은 한 장이다.
+ */
 function createListWindow () {
+  if (listWindow && !listWindow.isDestroyed()) {
+    if (listWindow.isMinimized()) listWindow.restore()
+    listWindow.show()
+    listWindow.focus()
+    return listWindow
+  }
+
   const win = new BrowserWindow({
     width: 460,
     height: 620,
@@ -189,8 +213,87 @@ function createListWindow () {
     title: 'Keep 메모',
     webPreferences: { preload: PRELOAD, contextIsolation: true, nodeIntegration: false }
   })
+  listWindow = win
   win.loadFile(path.join(__dirname, 'renderer', 'list.html'))
+  // 창이 실제로 사라진 뒤에 참조를 놓는다. 여기서 지우지 않으면 다음 열기가
+  // 죽은 창을 앞으로 가져오려다 아무 일도 안 하게 되고, 목록이 영영 안 뜬다.
+  // 남의 항목을 지우지 않도록 동일성을 확인한다(createNoteWindow 와 같다).
+  win.on('closed', () => {
+    if (listWindow === win) listWindow = null
+  })
   return win
+}
+
+/**
+ * 트레이에서 목록 창을 여는 유일한 진입점.
+ *
+ * 시작이 끝나기 전에는 목록 창을 만들지 않는다. 그 시점에는 notes:list 같은
+ * IPC 핸들러가 아직 없어서, 만들어봐야 아무것도 못 불러오는 빈 창이 뜬다.
+ * 대신 지금 떠 있는 창(최초 실행 설정 창이나 로그인 창)을 앞으로 가져온다 —
+ * 사용자가 트레이를 누른 이유는 결국 "앱을 보여 달라"이기 때문이다.
+ */
+function openOrFocusList () {
+  if (!startupComplete) {
+    const [win] = BrowserWindow.getAllWindows()
+    if (win && !win.isDestroyed()) {
+      if (win.isMinimized()) win.restore()
+      win.focus()
+    }
+    return
+  }
+  createListWindow()
+}
+
+/**
+ * 트레이 아이콘을 만든다. 실패하면 던진다 — 부르는 쪽(ensureTray)이 처리한다.
+ *
+ * 아이콘 픽셀은 파일이 아니라 소스(tray-icon.js)의 base64 문자열에서 온다.
+ * 이유는 그 파일의 주석에 있다(요약: 배포본의 app.asar 안 경로를 이미지
+ * 로더가 못 읽는 경우가 있고, 그러면 아이콘이 비어 앱이 통째로 안 보인다).
+ */
+function createTray () {
+  const icon = nativeImage.createFromDataURL(TRAY_ICON_DATA_URL)
+  // 디코드에 실패해도 nativeImage 는 던지지 않고 '빈 이미지'를 준다. 그대로
+  // Tray 에 넘기면 알림 영역에 아무것도 안 보이는 트레이가 생긴다 — 있으나
+  // 마나 한 정도가 아니라, "창이 없어도 된다"의 근거가 거짓이 된다.
+  if (icon.isEmpty()) throw new Error('트레이 아이콘 PNG 를 디코드하지 못했다')
+
+  const t = new Tray(icon)
+  t.setToolTip(TRAY_TOOLTIP)
+  t.setContextMenu(Menu.buildFromTemplate(trayMenuTemplate({
+    onOpenList: openOrFocusList,
+    // 트레이의 [종료]도 반드시 app.quit() 을 거친다. 미저장 편집 flush 와
+    // 사이드카 정리는 전부 before-quit / will-quit 에 있고, 그 경로를
+    // 건너뛰면 편집이 소리 없이 사라지고 파이썬 자식이 살아남는다.
+    onQuit: () => app.quit()
+  })))
+  // 왼쪽 클릭. Windows 에서 오른쪽 클릭은 위 컨텍스트 메뉴가 받는다.
+  t.on('click', openOrFocusList)
+  return t
+}
+
+/**
+ * 트레이를 세운다. 멱등하고, 실패해도 앱을 죽이지 않는다.
+ *
+ * 실패하면 tray 는 null 로 남는다. 그 상태에서는 window-all-closed 가 예전처럼
+ * 앱을 끝내므로(아래 참고) 최악의 경우에도 "보이지도 않고 죽지도 않는 앱"은
+ * 생기지 않는다 — 목록 창을 닫으면 앱이 같이 끝나는, 고치기 전의 동작으로
+ * 돌아갈 뿐이다.
+ */
+function ensureTray () {
+  if (tray && !tray.isDestroyed()) return tray
+  try {
+    tray = createTray()
+  } catch (err) {
+    console.warn(`트레이 아이콘을 만들지 못했다: ${err.message}`)
+    tray = null
+  }
+  return tray
+}
+
+/** 트레이 아이콘이 지금 화면에 있는가. 창 없이 살아 있어도 되는 유일한 근거다. */
+function trayAlive () {
+  return !!tray && !tray.isDestroyed()
 }
 
 function createNoteWindow (noteId) {
@@ -391,6 +494,16 @@ app.whenReady().then(async () => {
   store = new Store(path.join(app.getPath('userData'), 'state.json'))
   store.load()
 
+  // 트레이를 시작의 맨 앞에서 세우는 이유는 편의가 아니라 안전이다. 시작
+  // 과정에는 창이 0 장인 순간이 여러 번 있다 — 설정 창을 닫은 뒤 로그인 창이
+  // 뜨기 전, 로그인 창을 닫은 뒤 포스트잇을 복원하기 전. 트레이가 없으면 그
+  // 순간마다 window-all-closed 가 발동해 멀쩡히 진행 중인 시작을 끝내버린다.
+  //
+  // 반대 방향의 위험(트레이가 있어서 종료가 막히는 것)은 없다. 아래의 두
+  // 조기 종료 경로는 window-all-closed 에 기대지 않고 직접 app.quit() 을
+  // 부르며, app.quit() 은 트레이 유무와 무관하게 종료를 끝까지 진행한다.
+  ensureTray()
+
   accountEmail = resolveEmail(store)
   if (!accountEmail) {
     // 저장된 값도 환경 변수도 없다 — 최초 실행이다. 사이드카는 아직 시작하지
@@ -402,8 +515,11 @@ app.whenReady().then(async () => {
     // 사용자가 이메일을 입력하지 않고 설정 창을 닫았다. ensureAuth 실패
     // 경로와 같은 모양(대화상자 → 사이드카 정리 → quit → return)을 유지해
     // 종료 경로를 하나로 둔다 — 창이 하나도 없는 상태에서 조용히 return 하면
-    // window-all-closed 가 영영 불리지 않는다(이 시점까지 창이 열린 적이
-    // 없으므로).
+    // 앱이 남는다. 트레이가 생긴 뒤로는 그것이 더 확실해졌다: window-all-closed
+    // 는 트레이가 살아 있는 동안 앱을 끝내지 않으므로, 여기서 명시적으로 부르는
+    // app.quit() 이 이 경로의 유일한 종료 수단이다. app.quit() 은 트레이가
+    // 있어도 before-quit → will-quit 을 거쳐 끝까지 진행하며, will-quit 에서
+    // 사이드카를 다시 한 번 정리하고 트레이 아이콘도 지운다.
     dialog.showErrorBox('Keep 계정 설정 필요',
       '이메일을 입력하지 않아 앱을 종료합니다.\n다시 실행하면 설정 창이 다시 열립니다.')
     stopSidecar()
@@ -496,17 +612,21 @@ app.whenReady().then(async () => {
   })
 
   if (!(await ensureAuth())) {
-    // 이 시점까지 창이 하나도 뜨지 않았다. window-all-closed 는 열려 있던
-    // 창이 닫힐 때만 발동하므로 여기서는 절대 불리지 않는다 — 그러면
-    // 사이드카(와 마스터 토큰을 쥔 Python 자식 프로세스)가 안 죽고 남아
-    // 사용자가 작업 관리자로 끌 수밖에 없는 유령 프로세스가 된다.
-    // 창이 없는 상태에서 실패를 반환한 쪽이 종료까지 책임진다.
+    // 이 시점에 남아 있는 창이 없다(로그인 창은 ensureAuth 안에서 닫힌다).
+    // 그리고 트레이가 살아 있으므로 window-all-closed 는 앱을 끝내지 않는다.
+    // 즉 여기서 조용히 return 하면 사이드카(와 마스터 토큰을 쥔 Python 자식
+    // 프로세스)가 안 죽고 남아, 사용자가 작업 관리자로 끌 수밖에 없는 유령
+    // 프로세스가 된다. 아이콘만 남고 뒤에 아무것도 없는 트레이는 그보다 더
+    // 나쁘다. 실패를 반환한 쪽이 종료까지 책임진다.
     dialog.showErrorBox('Keep 연결 실패', '인증에 실패했습니다. 앱을 종료합니다.')
     stopSidecar()
     app.quit()
     return
   }
   await sidecar.call('set_account', { email: accountEmail })
+  // 여기부터는 IPC 핸들러와 사이드카 세션이 모두 준비됐다. 트레이 메뉴가
+  // 목록 창을 만들어도 되는 것은 이 줄 이후부터다.
+  startupComplete = true
   // 지난 세션에 띄워둔 포스트잇을 위치까지 복원한다.
   for (const id of store.visibleIds()) createNoteWindow(id)
   createListWindow()
@@ -518,6 +638,15 @@ app.whenReady().then(async () => {
 // 정리가 아니다 — 자식이 keep.sync() 안에서 네트워크를 기다리는 중이라면 그
 // 우연은 성립하지 않고, 마스터 토큰을 쥔 유령 프로세스가 남는다.
 app.on('window-all-closed', () => {
+  // 트레이 아이콘이 화면에 있으면 "창이 0 장"은 정상 상태다 — 사용자는 목록
+  // 창을 닫은 것이지 앱을 끝낸 것이 아니다. 앱은 트레이에서 계속 산다.
+  //
+  // 조건이 "트레이를 만들려고 했는가"가 아니라 "트레이가 지금 살아 있는가"인
+  // 것이 핵심이다. 원래의 유령 프로세스 버그가 나빴던 이유는 화면에 앱이 살아
+  // 있다는 표시가 하나도 없다는 것이었다. 창 없이 사는 것이 허용되는 근거는
+  // 오직 보이는 아이콘 하나뿐이므로, 그 아이콘이 없으면 근거도 없다 —
+  // 아이콘 생성에 실패했거나 이미 정리된 뒤라면 예전처럼 앱을 끝낸다.
+  if (trayAlive()) return
   stopSidecar()
   app.quit()
 })
@@ -541,7 +670,16 @@ app.on('before-quit', (e) => {
 })
 
 // 위 경로를 타지 않은 종료(외부 요인, 재진입 등)에서도 반드시 정리한다.
-app.on('will-quit', stopSidecar)
+// 사이드카 정리가 먼저다 — 트레이 아이콘 하나 때문에 파이썬 자식이 남는 일은
+// 없어야 한다.
+app.on('will-quit', () => {
+  stopSidecar()
+  // Windows 는 프로세스가 사라진 뒤에도 알림 영역에 죽은 아이콘을 남겨두는 일이
+  // 있다(마우스를 올려야 그제야 사라진다). 종료했는데 아이콘이 남아 있으면
+  // 사용자는 앱이 아직 살아 있다고 읽는다. 명시적으로 지운다.
+  if (trayAlive()) tray.destroy()
+  tray = null
+})
 
 // Windows 종료/로그오프에서는 before-quit / will-quit 이 오지 않는다.
 // 저장을 기다릴 시간도 없는 경로다. 최소한 유령 프로세스는 남기지 않는다.
