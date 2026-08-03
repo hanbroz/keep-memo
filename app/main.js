@@ -14,6 +14,7 @@ const { validateEmail } = require('./email-validate')
 const { bookmarkBounds, BOOKMARK } = require('./bookmark-layout')
 const { reconcileSelection } = require('./selection-reconcile')
 const { validateNotePatch } = require('./note-patch')
+const { joinTitleAndText } = require('./renderer/note-title')
 const { trayMenuTemplate, TRAY_TOOLTIP } = require('./tray-menu')
 const { TRAY_ICON_DATA_URL } = require('./tray-icon')
 
@@ -635,12 +636,24 @@ app.whenReady().then(async () => {
     if (!validated.ok) {
       return { ok: false, message: validated.message, code: 'BAD_REQUEST' }
     }
+    // color 전용 patch(title 도 text 도 없음)에서는 보관할 미저장 "본문"이
+    // 애초에 없다 — selectColor() 는 편집기 내용을 건드리지 않는다. 그
+    // 경우에만 conflictBackup 을 null 로 정규화한다(DEFAULT_NOTE_STATE.
+    // conflictBackup 도 null 이 "보관본 없음"의 표현이다). title 이나 text 가
+    // 하나라도 있으면, 렌더러가 쪼개 보낸 두 조각을 joinTitleAndText 로 다시
+    // 합쳐 사용자가 화면에서 실제로 보고 있던 전체 문자열을 복원한다 —
+    // res.sentText(사이드카가 돌려주는 값)나 validated.params.text 만으로는
+    // title 이 빠진 본문 조각만 남아 "화면에 있던 전부"가 아니게 된다.
+    const hasTextEdit = validated.params.title !== undefined || validated.params.text !== undefined
+    const sentContent = hasTextEdit
+      ? joinTitleAndText(validated.params.title, validated.params.text)
+      : null
     try {
       const res = await sidecar.call('update_note', { id, ...validated.params })
       // 성공한 저장은 앞선 실패/충돌의 보관본을 무효로 만든다. 지우지 않으면
       // 노트 본문이 %APPDATA% 의 state.json 에 무기한 남는데, 이걸 보거나
       // 지우는 UI 는 Phase 2 라서 사용자는 존재조차 모른다.
-      store.setNote(id, { conflictBackup: res.conflict ? res.sentText : null })
+      store.setNote(id, { conflictBackup: res.conflict ? sentContent : null })
       store.save()
       return { ok: true, ...res }
     } catch (err) {
@@ -649,10 +662,7 @@ app.whenReady().then(async () => {
       // 여기서 잡아 shape 로 돌려준다 — auth:exchange 와 같은 관례다.
       // 저장 자체가 실패했으므로 이 편집은 서버에 도달하지 못했다. 충돌과
       // 같은 방식으로 conflictBackup 에 보관해 ✕ 를 눌러도 사라지지 않게 한다.
-      // color 전용 patch(text 없음)에서는 validated.params.text 가 undefined다.
-      // 보관할 미저장 본문이 애초에 없었다는 뜻이므로 null 로 정규화한다 —
-      // DEFAULT_NOTE_STATE.conflictBackup 도 null 이 "보관본 없음"의 표현이다.
-      store.setNote(id, { conflictBackup: validated.params.text ?? null })
+      store.setNote(id, { conflictBackup: sentContent })
       store.save()
       return { ok: false, message: err.message, code: err.code }
     }

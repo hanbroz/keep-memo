@@ -266,6 +266,34 @@ def test_update_text_and_color_together_applies_both(account):
     assert res["conflict"] is False
 
 
+def test_update_title_and_text_together_no_conflict(account):
+    """포스트잇이 편집기 문자열을 title/text 로 쪼개 한 번에 같이 보낸다.
+    이 조합에서도 정상 저장은 여전히 충돌 없이 끝나야 한다 — 충돌 판정은
+    text 필드 하나만 보고, sync 전후로 text 가 우리가 보낸 값과 같으면 그걸로
+    끝이다. title 을 같이 보낸다고 그 판정이 흔들리면 안 된다."""
+    created = _call(account, "create_note", title="원래 제목", text="원본 본문")["result"]["note"]
+    res = _call(account, "update_note", id=created["id"], title="새 제목", text="새 본문")["result"]
+    assert res["note"]["title"] == "새 제목"
+    assert res["note"]["text"] == "새 본문"
+    assert res["conflict"] is False
+    assert res["sentText"] == "새 본문"
+
+
+def test_update_title_and_text_together_detects_conflict_when_server_overrides(account):
+    """title/text 를 같이 보낸 상태에서 sync 도중 다른 기기가 본문을 덮어쓰면
+    여전히 충돌로 잡혀야 한다. 쪼개서 보낸 text 가 편집기 원문보다 짧아졌다고
+    (title 이 앞에서 떨어져 나갔다고) 이 판정 로직 자체는 전혀 달라지지 않는다
+    — sent_text 는 우리가 이번 호출에서 설정한 text 값 그대로이고, 그 값과
+    sync 후 서버 값을 비교할 뿐이기 때문이다."""
+    created = _call(account, "create_note", title="원래 제목", text="원본 본문")["result"]["note"]
+    account._keep.server_override = "폰에서 고친 내용"
+    res = _call(account, "update_note", id=created["id"], title="새 제목", text="PC에서 고친 내용")["result"]
+    assert res["conflict"] is True
+    assert res["sentText"] == "PC에서 고친 내용"
+    assert res["note"]["title"] == "새 제목"  # title 은 충돌 판정과 무관하게 그대로 적용된다
+    assert res["note"]["text"] == "폰에서 고친 내용"
+
+
 def test_serve_survives_cp949_stdout_with_emoji_note(account):
     """한국어 Windows 의 기본 콘솔 코드페이지는 cp949 이고, 이모지처럼 BMP 밖
     문자는 표현하지 못한다. 실사용자가 겪은 크래시: 노트 본문에 이모지가 있으면

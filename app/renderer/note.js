@@ -6,7 +6,9 @@ const DEBOUNCE_MS = 1500
 const BOOKMARK_MAX_CHARS = 10
 let noteId = null
 let timer = null
-// 서버에 마지막으로 반영된(또는 애초에 불러온) 텍스트. "타이머가 걸려
+// 서버에 마지막으로 반영된(또는 애초에 불러온) 편집기 문자열. title 과
+// text 를 joinTitleAndText 로 합친 값이다 — body.value 자체가 이제 title+text
+// 를 합쳐 보여주므로, 비교 기준도 그 합쳐진 문자열이어야 한다. "타이머가 걸려
 // 있는가"가 아니라 이 값과 body.value 가 다른가로 미저장 편집 유무를
 // 판단한다 — 우클릭 후 취소처럼 타이머 없이도 미저장 편집이 남는 경로가
 // 있기 때문이다.
@@ -175,21 +177,30 @@ async function flush () {
   // 를 막는 마지막 방어선이다.
   if (!loaded) return
   const attempt = body.value
+  // 편집기의 첫 줄이 title, 그 다음이 text 다 — splitTitleAndText 는
+  // note-title.js 가 전역에 건 순수 함수다(require 없음, note.html 이 이
+  // 파일보다 먼저 그 스크립트를 불러온다).
+  const { title, text } = splitTitleAndText(attempt)
   status.textContent = '저장 중'
-  const res = await window.keepSticky.updateNote(noteId, { text: attempt })
+  const res = await window.keepSticky.updateNote(noteId, { title, text })
   if (!res.ok) {
     // notes:update 는 이제 실패해도 거절(reject)하지 않고 { ok:false } 로
     // 응답한다 — ipcMain.handle 이 던지면 err.code 가 IPC 경계를 못 건너오기
     // 때문이다. 사용자가 친 내용은 이미 main 프로세스가 conflictBackup 으로
-    // 보관했으니 여기서는 알리기만 한다.
+    // 보관했으니(title+text 를 합친 전체 문자열로, split 이전의 attempt 와
+    // 같은 값이다) 여기서는 알리기만 한다.
     showSaveFailure(attempt)
     status.textContent = res.code === 'AUTH_REQUIRED' ? '재로그인 필요' : '저장 실패 — 편집본 보관됨'
     return
   }
   if (res.conflict) {
-    showConflict(res.sentText)
-    body.value = res.note.text // 서버가 이긴 내용을 보여준다
-    savedText = res.note.text
+    // 배지 툴팁에는 방금 쪼개 보낸 text 조각이 아니라 사용자가 화면에서 실제로
+    // 보고 있던 전체 문자열(attempt)을 보여준다 — res.sentText 는 이제
+    // title 이 빠진 본문 조각일 뿐이라 "내가 뭘 갖고 있었는지"를 온전히
+    // 보여주지 못한다.
+    showConflict(attempt)
+    body.value = joinTitleAndText(res.note.title, res.note.text) // 서버가 이긴 내용을 보여준다
+    savedText = body.value
   } else {
     badge.classList.remove('show')
     savedText = attempt
@@ -305,8 +316,11 @@ window.keepSticky.noteId().then(async (id) => {
   const note = notes.find((n) => n.id === id)
   // 목록에 없는 id 도 실패다. 여기서 빈 문자열로 폴백하면 그게 곧 원본 삭제다.
   if (!note) throw new Error('목록에서 이 메모를 찾지 못했습니다')
-  body.value = note.text
-  savedText = note.text
+  // title 이 있으면 첫 줄로, 없으면 text 그대로. 저장 시 splitTitleAndText 가
+  // 이 문자열을 정확히 되돌려 쪼갠다(app/renderer/note-title.js 참고) — 그래야
+  // title 을 눈으로 보면서 고칠 수 있고, 고치지 않고 저장해도 내용이 새지 않는다.
+  body.value = joinTitleAndText(note.title, note.text)
+  savedText = body.value
   // Keep 의 색 이름을 그대로 속성 값으로 심는다 (innerHTML 경로가 아니다).
   // note.html 에 없는 이름이면 어느 규칙에도 안 걸려 기본 노란색이 남는다.
   if (note.color) document.body.dataset.color = note.color
