@@ -73,7 +73,8 @@ test('note.html 은 note.js 보다 먼저 순수 로직 모듈들을 부른다',
   const sources = scriptSources('note.html')
   const noteIndex = sources.indexOf('note.js')
   assert.ok(noteIndex >= 0, 'note.html 이 note.js 를 불러야 한다')
-  for (const dep of ['bookmark-text.js', 'checklist-items.js', 'url-open.js',
+  for (const dep of ['bookmark-text.js', 'line-model.js', 'undo-stack.js',
+                     'checklist-items.js', 'url-open.js',
                      'font-settings.js', 'note-font.js']) {
     const at = sources.indexOf(dep)
     assert.ok(at >= 0, `note.html 이 ${dep} 를 불러야 한다`)

@@ -222,6 +222,27 @@ def _call(svc, method, **params):
     return ks.handle(svc, json.dumps({"id": 1, "method": method, "params": params}))
 
 
+def _make_list(svc, title="장보기", items=None):
+    """대역 Keep 안에 List 노트를 직접 만들고 직렬화 결과를 돌려준다.
+
+    create_checklist RPC 는 없앴다 — 이 앱은 Keep 의 List 를 새로 만들지 않는다
+    (체크리스트는 이제 메모 본문 텍스트 안의 규약이다). 하지만 사용자가 **폰에서
+    만들어 둔** List 노트는 여전히 열리고 고쳐져야 하고, 그 경로를 시험하려면
+    그런 노트가 하나 있어야 한다. 그래서 RPC 를 거치지 않고 gkeepapi 의
+    createList 를 그대로 부른다 — 실제로 노트가 생기는 경로와 같다.
+
+    items 는 [{"text": ..., "checked": ...}] 로 받는다(옛 create_checklist 와
+    같은 모양이라 이 파일의 시험들이 그대로 읽힌다).
+    """
+    keep = svc._require_keep()
+    node = keep.createList(
+        title,
+        [(i.get("text", ""), i.get("checked", False)) for i in (items or [])],
+    )
+    keep.sync()
+    return ks._serialize(node)
+
+
 def test_create_then_list(account):
     _call(account, "create_note", title="제목", text="본문")
     res = _call(account, "list_notes")
@@ -378,10 +399,11 @@ def test_text_note_serializes_unchanged_except_for_kind(account):
     assert created["updated"] == "2026-07-30T09:00:00"
 
 
-def test_create_checklist_with_items(account):
-    res = _call(account, "create_checklist", title="장보기",
-                items=[{"text": "우유", "checked": False},
-                       {"text": "빵", "checked": True}])["result"]["note"]
+def test_list_note_serializes_with_items(account):
+    """폰에서 만든 List 노트의 직렬화 결과."""
+    res = _make_list(account, title="장보기",
+                     items=[{"text": "우유", "checked": False},
+                            {"text": "빵", "checked": True}])
     assert res["kind"] == "list"
     assert res["title"] == "장보기"
     assert [i["text"] for i in res["items"]] == ["우유", "빵"]
@@ -391,8 +413,8 @@ def test_create_checklist_with_items(account):
     assert len({i["id"] for i in res["items"]}) == 2
 
 
-def test_create_checklist_appears_in_list_notes_as_a_list(account):
-    _call(account, "create_checklist", title="장보기", items=[{"text": "우유"}])
+def test_list_note_appears_in_list_notes_as_a_list(account):
+    _make_list(account, title="장보기", items=[{"text": "우유"}])
     notes = _call(account, "list_notes")["result"]["notes"]
     assert len(notes) == 1
     assert notes[0]["kind"] == "list"
@@ -401,16 +423,16 @@ def test_create_checklist_appears_in_list_notes_as_a_list(account):
     assert "우유" in notes[0]["text"]
 
 
-def test_create_checklist_without_items_is_empty(account):
-    res = _call(account, "create_checklist", title="빈 목록")["result"]["note"]
+def test_list_note_without_items_serializes_empty_items(account):
+    res = _make_list(account, title="빈 목록")
     assert res["kind"] == "list"
     assert res["items"] == []
 
 
 def test_toggle_item_checked(account):
-    created = _call(account, "create_checklist", title="장보기",
-                    items=[{"text": "우유", "checked": False},
-                           {"text": "빵", "checked": False}])["result"]["note"]
+    created = _make_list(account, title="장보기",
+                         items=[{"text": "우유", "checked": False},
+                                {"text": "빵", "checked": False}])
     items = [dict(i) for i in created["items"]]
     items[0]["checked"] = True
     res = _call(account, "update_checklist", id=created["id"], items=items)["result"]
@@ -421,8 +443,7 @@ def test_toggle_item_checked(account):
 
 
 def test_edit_item_text(account):
-    created = _call(account, "create_checklist", title="장보기",
-                    items=[{"text": "우유"}])["result"]["note"]
+    created = _make_list(account, title="장보기", items=[{"text": "우유"}])
     items = [dict(i) for i in created["items"]]
     items[0]["text"] = "우유 2L"
     res = _call(account, "update_checklist", id=created["id"], items=items)["result"]
@@ -434,8 +455,7 @@ def test_edit_item_text(account):
 
 def test_update_checklist_can_change_title_too(account):
     """제목 칸은 두 종류 모두에 있다. 체크리스트도 제목을 갖는다."""
-    created = _call(account, "create_checklist", title="원래 제목",
-                    items=[{"text": "우유"}])["result"]["note"]
+    created = _make_list(account, title="원래 제목", items=[{"text": "우유"}])
     res = _call(account, "update_checklist", id=created["id"],
                 title="새 제목", items=created["items"])["result"]
     assert res["note"]["title"] == "새 제목"
@@ -445,8 +465,7 @@ def test_update_checklist_can_change_title_too(account):
 def test_update_checklist_detects_conflict_when_server_overrides(account):
     """sync 도중 다른 기기가 항목을 고쳤다면 충돌로 잡혀야 한다 — update_note 의
     sentText 판정과 같은 뜻이다."""
-    created = _call(account, "create_checklist", title="장보기",
-                    items=[{"text": "우유"}])["result"]["note"]
+    created = _make_list(account, title="장보기", items=[{"text": "우유"}])
 
     def phone_edit(node):
         node.items[0].text = "폰에서 고친 항목"
@@ -473,8 +492,8 @@ def test_update_checklist_detects_conflict_when_server_overrides(account):
 def test_update_checklist_malformed_payload_is_bad_request(account, bad_items):
     """렌더러는 신뢰할 수 없다. 잘못된 payload 는 죽지도 조용히 무시되지도 않고
     BAD_REQUEST 로 떨어져야 한다 — update_note 의 색 검증과 같은 성격이다."""
-    created = _call(account, "create_checklist", title="장보기",
-                    items=[{"text": "우유", "checked": False}])["result"]["note"]
+    created = _make_list(account, title="장보기",
+                         items=[{"text": "우유", "checked": False}])
     res = _call(account, "update_checklist", id=created["id"], items=bad_items)
     assert res["error"]["code"] == "BAD_REQUEST"
     # 거절됐으니 노드는 손대지 않은 채로 남아야 한다.
@@ -485,8 +504,8 @@ def test_update_checklist_malformed_payload_is_bad_request(account, bad_items):
 def test_update_checklist_rejects_partial_application(account):
     """항목 셋 중 둘째가 잘못됐으면 첫째도 적용되면 안 된다. 검증은 노드를
     건드리기 **전에** 전부 끝나야 한다(update_note 의 색 검증과 같은 이유)."""
-    created = _call(account, "create_checklist", title="장보기",
-                    items=[{"text": "우유"}, {"text": "빵"}])["result"]["note"]
+    created = _make_list(account, title="장보기",
+                         items=[{"text": "우유"}, {"text": "빵"}])
     items = [dict(i) for i in created["items"]]
     items[0]["text"] = "적용되면 안 되는 값"
     items[1]["checked"] = "true"  # 무효
@@ -498,8 +517,7 @@ def test_update_checklist_rejects_partial_application(account):
 
 def test_update_checklist_unknown_item_id_is_bad_request(account):
     """이 체크리스트에 없는 항목 id 는 조용히 건너뛰지 않는다."""
-    created = _call(account, "create_checklist", title="장보기",
-                    items=[{"text": "우유"}])["result"]["note"]
+    created = _make_list(account, title="장보기", items=[{"text": "우유"}])
     res = _call(account, "update_checklist", id=created["id"],
                 items=[{"id": "없는항목id", "text": "우유", "checked": True}])
     assert res["error"]["code"] == "BAD_REQUEST"
@@ -517,18 +535,14 @@ def test_update_checklist_on_text_note_is_bad_request(account):
     assert res["error"]["code"] == "BAD_REQUEST"
 
 
-def test_create_checklist_rejects_client_supplied_item_id(account):
-    """항목 id 는 Keep 이 정한다. 렌더러가 정해 보내면 거절한다."""
-    res = _call(account, "create_checklist", title="장보기",
-                items=[{"id": "내가정한id", "text": "우유"}])
-    assert res["error"]["code"] == "BAD_REQUEST"
-
-
 def test_update_note_cannot_write_text_of_a_checklist(account):
     """List.text 는 읽기 전용 프로퍼티라 대입하면 AttributeError 가 난다.
-    INTERNAL 스택 트레이스가 아니라 BAD_REQUEST 로 걸러져야 한다."""
-    created = _call(account, "create_checklist", title="장보기",
-                    items=[{"text": "우유"}])["result"]["note"]
+    INTERNAL 스택 트레이스가 아니라 BAD_REQUEST 로 걸러져야 한다.
+
+    포스트잇이 메모 본문을 "- [ ] 우유" 같은 텍스트로 저장하게 된 뒤에도 이
+    가드는 그대로 필요하다 — 폰에서 만든 List 노트를 연 창이 실수로 text 경로를
+    타면 여기서 걸려야 한다."""
+    created = _make_list(account, title="장보기", items=[{"text": "우유"}])
     res = _call(account, "update_note", id=created["id"], text="본문으로 덮어쓰기")
     assert res["error"]["code"] == "BAD_REQUEST"
     after = _call(account, "list_notes")["result"]["notes"][0]
@@ -537,8 +551,7 @@ def test_update_note_cannot_write_text_of_a_checklist(account):
 
 def test_update_note_can_still_change_a_checklists_title_and_color(account):
     """제목과 색은 두 종류 모두에 있다. 체크리스트라고 막을 이유가 없다."""
-    created = _call(account, "create_checklist", title="원래 제목",
-                    items=[{"text": "우유"}])["result"]["note"]
+    created = _make_list(account, title="원래 제목", items=[{"text": "우유"}])
     res = _call(account, "update_note", id=created["id"],
                 title="새 제목", color="Blue")["result"]
     assert res["note"]["title"] == "새 제목"
@@ -549,8 +562,12 @@ def test_update_note_can_still_change_a_checklists_title_and_color(account):
 def test_checklist_rpc_methods_are_whitelisted(service):
     """ALLOWED_METHODS 가 보안 경계다. 새 메서드는 여기 올라야 닿을 수 있고,
     올리지 않은 이름은 여전히 닿을 수 없어야 한다."""
-    assert "create_checklist" in ks.ALLOWED_METHODS
     assert "update_checklist" in ks.ALLOWED_METHODS
+    # create_checklist 는 없앴다. 이 앱은 Keep 의 List 를 새로 만들지 않는다 —
+    # 체크리스트는 메모 본문 텍스트 안의 규약이다. 이름이 다시 슬며시 돌아오면
+    # 여기서 걸린다.
+    assert "create_checklist" not in ks.ALLOWED_METHODS
+    assert not hasattr(ks.KeepService, "create_checklist")
     # 화이트리스트에 없는 내부 헬퍼는 여전히 부를 수 없다.
     for hidden in ["_validate_items", "_serialize_items", "_is_checklist"]:
         res = ks.handle(service, json.dumps({"id": 1, "method": hidden, "params": {}}))

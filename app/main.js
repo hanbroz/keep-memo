@@ -783,14 +783,10 @@ app.whenReady().then(async () => {
     return res.note
   })
 
-  // 체크리스트 만들기. Keep 의 노트는 Note 이거나 List 이고 둘 사이에 변환
-  // 경로가 없으므로(gkeepapi 의 type 에는 setter 도 convert* 도 없다), 어느
-  // 쪽인지는 만드는 이 순간에 정해진다. 그래서 목록 창의 [+ 새 메모] 와
-  // [+ 새 체크리스트] 가 서로 다른 핸들러로 갈라진다.
-  ipcMain.handle('notes:createChecklist', async (_e, title, items) => {
-    const res = await sidecar.call('create_checklist', { title, items })
-    return res.note
-  })
+  // 만들기 핸들러는 위 하나뿐이다. 이 앱이 만드는 메모는 언제나 text 노트다 —
+  // 체크리스트는 메모의 종류가 아니라 본문 안의 텍스트 규약이기 때문이다
+  // (app/renderer/line-model.js). 예전에 있던 notes:createChecklist 와 사이드카의
+  // create_checklist 는 그래서 없앴다.
   ipcMain.handle('auth:exchange', async (_e, token) => {
     try {
       await sidecar.call('exchange_cookie', { email: accountEmail, oauth_token: token })
@@ -883,11 +879,14 @@ app.whenReady().then(async () => {
     // 경우에만 conflictBackup 을 null 로 정규화한다(DEFAULT_NOTE_STATE.
     // conflictBackup 도 null 이 "보관본 없음"의 표현이다). title 이나 text 가
     // 하나라도 있으면 렌더러가 보낸 두 필드를 { title, text } 그대로 보관한다 —
-    // 포스트잇은 이제 두 칸(제목 입력칸/본문 textarea)이 각자 title/text 를
-    // 담당하므로 하나로 합쳤다가 나중에 다시 나눌 이유가 없다. 예전에는 여기서
-    // joinTitleAndText 로 한 문자열을 만들었는데, 그건 편집기가 한 칸짜리
-    // textarea 하나였을 때(첫 줄이 제목 역할) 그 한 문자열을 복원하기 위한
-    // 것이었다.
+    // 포스트잇은 제목 입력칸과 본문이 각자 title/text 를 담당하므로 하나로
+    // 합쳤다가 나중에 다시 나눌 이유가 없다. 예전에는 여기서 joinTitleAndText 로
+    // 한 문자열을 만들었는데, 그건 편집기가 한 칸짜리 textarea 하나였을 때
+    // (첫 줄이 제목 역할) 그 한 문자열을 복원하기 위한 것이었다.
+    //
+    // **본문이 줄 편집기가 된 뒤에도 이 모양 그대로다.** 체크박스는 본문 텍스트
+    // 안의 "- [ ] " / "- [x] " 표식으로 실려 오므로(line-model.js), text 한
+    // 필드가 체크 상태까지 남김없이 담는다 — 보관본에 따로 더할 것이 없다.
     const hasTextEdit = validated.params.title !== undefined || validated.params.text !== undefined
     const sentContent = hasTextEdit
       ? { title: validated.params.title, text: validated.params.text }
@@ -912,15 +911,18 @@ app.whenReady().then(async () => {
     }
   })
 
-  // 체크리스트 저장. notes:update 와 같은 뼈대다 — 화이트리스트 검증, 휴지통
-  // 가드, conflictBackup 보관, 오류를 던지지 않고 shape 로 돌려주기까지 같다.
+  // 폰에서 만든 **진짜 Keep List** 노트의 저장. notes:update 와 같은 뼈대다 —
+  // 화이트리스트 검증, 휴지통 가드, conflictBackup 보관, 오류를 던지지 않고
+  // shape 로 돌려주기까지 같다. 이 앱은 List 를 새로 만들지 않지만(체크리스트는
+  // 본문 텍스트 규약이다), 이미 계정에 있는 List 는 열려서 쓸 수 있어야 하고
+  // List.text 는 읽기 전용이라 텍스트로 쓸 수가 없어 통로가 따로 필요하다.
   //
   // **conflictBackup 에 무엇을 담는가**가 이 핸들러의 핵심 결정이다. text 노트는
-  // { title, text } 를 담는다 — 사용자가 화면에서 보고 있던 두 칸 그대로다.
-  // 체크리스트에는 본문 칸이 없고 대신 항목 줄들이 있으므로 { title, items } 를
-  // 담는다. 같은 원칙(화면에 있던 것을 그대로, 잃지 않게)을 그 창의 실제 모양에
-  // 맞춘 것이다. items 에는 항목마다 id/text/checked 가 다 들어 있어서, 나중에
-  // 이 보관본을 사람이 읽어도 무엇이 저장되지 못했는지 알 수 있다.
+  // { title, text } 를 담는다 — 체크박스까지 표식으로 그 text 안에 들어 있다.
+  // 진짜 List 노트에는 본문 필드가 없고 대신 항목들이 있으므로 { title, items }
+  // 를 담는다. 같은 원칙(화면에 있던 것을 그대로, 잃지 않게)을 그 노트의 실제
+  // 모양에 맞춘 것이다. items 에는 항목마다 id/text/checked 가 다 들어 있어서,
+  // 나중에 이 보관본을 사람이 읽어도 무엇이 저장되지 못했는지 알 수 있다.
   //
   // color 전용 patch 같은 것이 없으므로(색은 여전히 notes:update 로 간다)
   // 여기서는 sentContent 가 null 이 되는 경우가 없다 — 항상 보관할 것이 있다.

@@ -2,8 +2,12 @@
 const test = require('node:test')
 const assert = require('node:assert')
 const {
-  normalizeChecklistItems, checklistSignature, checklistText
+  normalizeChecklistItems, checklistSignature
 } = require('../renderer/checklist-items')
+
+// 이 파일이 지키는 것은 **폰에서 만든 진짜 Keep List** 노트를 고쳐 저장하는
+// 경로 하나뿐이다. 이 앱은 List 를 새로 만들지 않으므로(체크리스트는 메모 본문
+// 안의 텍스트 규약이다 — line-model.test.js) id 없는 항목을 받는 경우가 없다.
 
 // --- 사이드카가 받아들이는 모양 --------------------------------------------
 
@@ -25,7 +29,7 @@ test('빈 묶음도 유효하다 — 항목이 하나도 없는 체크리스트�
   assert.deepStrictEqual(res.items, [])
 })
 
-test('빈 text 는 유효하다 — 방금 만든, 아직 아무것도 안 쓴 줄이다', () => {
+test('빈 text 는 유효하다 — 글자를 다 지운 줄이 그것이다', () => {
   const res = normalizeChecklistItems([{ id: 'i1', text: '', checked: false }])
   assert.strictEqual(res.ok, true)
   assert.strictEqual(res.items[0].text, '')
@@ -35,14 +39,6 @@ test('checked 를 빼면 false 로 채운다', () => {
   const res = normalizeChecklistItems([{ id: 'i1', text: '우유' }])
   assert.strictEqual(res.ok, true)
   assert.strictEqual(res.items[0].checked, false)
-})
-
-test('새로 만들 때(requireId: false)는 id 없이 text/checked 만 받는다', () => {
-  const res = normalizeChecklistItems([{ text: '우유', checked: true }], { requireId: false })
-  assert.strictEqual(res.ok, true)
-  assert.deepStrictEqual(res.items, [{ text: '우유', checked: true }])
-  // id 를 붙이지 않는다 — 항목 id 는 Keep 이 정한다.
-  assert.ok(!('id' in res.items[0]))
 })
 
 // --- 무엇이 무효인가 -------------------------------------------------------
@@ -81,7 +77,7 @@ test('checked 가 진짜 불리언이 아니면 거절한다', () => {
   }
 })
 
-test('id 가 없거나 빈 문자열이면 거절한다(기존 항목 수정)', () => {
+test('id 가 없거나 빈 문자열이면 거절한다 — 항목 id 는 Keep 이 정한다', () => {
   for (const bad of [{ text: 'x' }, { id: '', text: 'x' }, { id: 42, text: 'x' },
                      { id: null, text: 'x' }]) {
     const res = normalizeChecklistItems([bad])
@@ -103,12 +99,6 @@ test('모르는 필드가 섞여 있으면 통째로 거절한다', () => {
   const res = normalizeChecklistItems([{ id: 'i1', text: '우유', checked: false, sort: 999 }])
   assert.strictEqual(res.ok, false)
   assert.ok(res.message.includes('sort'))
-})
-
-test('새로 만들 때 id 를 보내면 거절한다 — 렌더러가 정할 값이 아니다', () => {
-  const res = normalizeChecklistItems([{ id: '내가정한id', text: '우유' }], { requireId: false })
-  assert.strictEqual(res.ok, false)
-  assert.ok(res.message.includes('id'))
 })
 
 test('거절 메시지는 몇 번째 항목이 문제인지 알려준다', () => {
@@ -147,16 +137,6 @@ test('구분자로 쓸 법한 글자를 항목에 넣어도 서로 다른 묶음
 test('배열이 아니면 빈 서명이다', () => {
   assert.strictEqual(checklistSignature(null), '')
   assert.strictEqual(checklistSignature('items'), '')
-})
-
-// --- 책갈피에 쓸 본문 문자열 ------------------------------------------------
-
-test('항목 글자를 줄바꿈으로 이어 붙인다 — 책갈피는 그 첫 줄을 쓴다', () => {
-  assert.strictEqual(
-    checklistText([{ id: 'i1', text: '우유' }, { id: 'i2', text: '빵' }]),
-    '우유\n빵')
-  assert.strictEqual(checklistText([]), '')
-  assert.strictEqual(checklistText(null), '')
 })
 
 test('Electron 없이도 require 된다', () => {

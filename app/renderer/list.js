@@ -36,7 +36,12 @@ const bodySizeEl = document.getElementById('font-body-size')
 
 function titleOf (note) {
   // textContent 를 쓴다. Keep 본문은 외부 데이터이므로 innerHTML 은 쓰지 않는다.
-  return note.title || (note.text || '').split('\n')[0] || '(제목없음)'
+  //
+  // 제목이 없어 본문 첫 줄을 대신 쓸 때는 체크리스트 표식을 뗀다. 체크리스트가
+  // 메모 본문 안의 텍스트 규약이 되면서(line-model.js), 첫 줄이 항목인 메모가
+  // 흔해졌다 — 그대로 두면 좁은 목록 행에서 "- [ ] " 여섯 글자가 낭비되고,
+  // 그 표식은 사용자가 쓴 글자가 아니라 우리가 정한 규약이다.
+  return note.title || parseNoteLine((note.text || '').split('\n')[0]).text || '(제목없음)'
 }
 
 function showEmpty (message) {
@@ -156,22 +161,6 @@ document.getElementById('new').addEventListener('click', async () => {
   await window.keepSticky.openNote(note.id)
   await reload()
   statusEl.textContent = '새 메모를 바탕화면에 띄웠습니다'
-})
-
-// [+ 체크리스트]. [+ 새 메모] 와 같은 순서(만들고 → 띄우고 → 목록 갱신)지만
-// 부르는 RPC 가 다르다. Keep 의 노트는 Note 이거나 List 이고 둘 사이에 변환
-// 경로가 없어서 종류는 이 순간에 정해진다 — 나중에 바꿔 줄 방법이 없으므로
-// 버튼을 둘로 나누는 것 말고는 방법이 없다.
-//
-// 빈 줄 하나를 달고 만든다. 항목이 하나도 없는 체크리스트는 포스트잇에서 아무
-// 것도 없는 빈 화면으로 뜨고(항목을 추가하는 UI 는 이번 범위가 아니다), 그러면
-// 사용자가 방금 만든 것에 아무것도 쓸 수 없다.
-document.getElementById('new-checklist').addEventListener('click', async () => {
-  statusEl.textContent = '새 체크리스트 만드는 중…'
-  const note = await window.keepSticky.createChecklist('', [{ text: '', checked: false }])
-  await window.keepSticky.openNote(note.id)
-  await reload()
-  statusEl.textContent = '새 체크리스트를 바탕화면에 띄웠습니다'
 })
 
 // --- 검색 ------------------------------------------------------------------

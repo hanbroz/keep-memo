@@ -7,12 +7,12 @@ contextBridge.exposeInMainWorld('keepSticky', {
   listNotes: () => ipcRenderer.invoke('notes:list'),
   createNote: (title, text) => ipcRenderer.invoke('notes:create', title, text),
   updateNote: (id, patch) => ipcRenderer.invoke('notes:update', id, patch),
-  // 체크리스트. Keep 의 노트는 Note 이거나 List 이고 둘 사이에 변환 경로가 없어서
-  // (gkeepapi 의 type 에는 setter 도 convert* 도 없다) 만들 때 종류가 정해진다 —
-  // 그래서 만들기도 저장하기도 text 메모와 따로 있다. items 는
-  // [{ id, text, checked }] 이고, 검증은 checklist-items.js 한 벌을 렌더러/main/
-  // 사이드카가 나눠 쓴다.
-  createChecklist: (title, items) => ipcRenderer.invoke('notes:createChecklist', title, items),
+  // 폰에서 만든 **진짜 Keep List** 노트의 저장. 이 앱은 List 를 새로 만들지
+  // 않는다 — 체크리스트는 이제 메모 본문 안의 텍스트 규약이라(line-model.js)
+  // 만들기는 notes:create 하나뿐이다. 그래도 이미 계정에 있는 List 노트는 열려서
+  // 쓸 수 있어야 하고, List.text 는 읽기 전용이라 텍스트로는 쓸 수 없으므로
+  // 저장 통로가 하나 더 필요하다. items 는 [{ id, text, checked }] 이고, 검증은
+  // checklist-items.js 한 벌을 렌더러/main/사이드카가 나눠 쓴다.
   updateChecklist: (id, patch) => ipcRenderer.invoke('notes:updateChecklist', id, patch),
   // 포스트잇 본문에서 Ctrl+클릭한 주소를 기본 브라우저로 연다. 렌더러가 이미
   // 한 번 걸렀더라도 main 이 다시 검증한다 — http/https 가 아니면 열리지 않는다.

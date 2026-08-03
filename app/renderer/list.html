@@ -108,11 +108,10 @@
     .unit { color: var(--ink-dim); font-size: var(--fs-body); }
     .field-actions { display: flex; gap: 8px; margin-top: 12px; }
 
-    /* flex-wrap 이 필요한 이유: 이 줄에 만들기 버튼이 둘이 되었다([+ 새 메모],
-       [+ 체크리스트]). 창은 360px 까지 좁힐 수 있고(main.js 의 minWidth), 사용자가
-       [설정]에서 본문 크기를 24pt 까지 올릴 수 있으므로 한 줄에 다 서지 못하는
-       조합이 실제로 존재한다. 접히지 않으면 줄 오른쪽 끝의 [설정]이 창 밖으로
-       밀려나 닿을 수 없게 된다 — 넘치면 아랫줄로 내려오는 편이 낫다.
+    /* flex-wrap 이 필요한 이유: 창은 360px 까지 좁힐 수 있고(main.js 의 minWidth),
+       사용자가 [설정]에서 본문 크기를 24pt 까지 올릴 수 있으므로 한 줄에 다 서지
+       못하는 조합이 실제로 존재한다. 접히지 않으면 줄 오른쪽 끝의 [설정]이 창
+       밖으로 밀려나 닿을 수 없게 된다 — 넘치면 아랫줄로 내려오는 편이 낫다.
        row-gap 을 따로 두어 두 줄이 되었을 때 서로 붙지 않게 한다. */
     footer {
       flex: none;
@@ -164,18 +163,21 @@
   </section>
   <footer>
     <button id="apply" type="button">완료</button>
-    <!-- 만들기 버튼이 둘인 것은 Keep 자체의 제약이다. 노트는 Note 이거나 List 이고
-         둘 사이에 변환 경로가 없어서(gkeepapi 의 type 에는 setter 도 convert* 도
-         없다) 종류가 만드는 순간에 정해진다. 나중에 "체크리스트로 바꾸기"를 둘
-         수 없으므로 여기서 갈라 두는 것 말고는 방법이 없다. 둘을 나란히 두어
-         무엇을 만드는지 누르기 전에 보이게 한다. -->
+    <!-- 만들기 버튼은 하나다. 체크리스트는 메모의 종류가 아니라 **메모 안의
+         줄**이라서다 — 포스트잇을 열고 [체크] 를 누르면 그 줄이 항목이 된다.
+         (예전에는 여기 [+ 체크리스트] 가 하나 더 있었다. Keep 의 List 노트를
+         통째로 만드는 버튼이었는데, 그러면 그 메모에는 글을 한 줄도 쓸 수 없다.) -->
     <button id="new" type="button">+ 새 메모</button>
-    <button id="new-checklist" type="button" title="체크박스가 있는 메모를 만듭니다 (나중에 일반 메모로 바꿀 수는 없습니다)">+ 체크리스트</button>
     <span id="status" role="status"></span>
     <button id="settings-toggle" type="button" aria-expanded="false" aria-controls="settings">설정</button>
   </footer>
+  <!-- line-model.js 는 목록 행의 제목을 뽑을 때 쓴다(제목이 없는 메모는 본문
+       첫 줄을 쓰는데, 그 줄이 체크리스트 항목이면 표식을 떼야 한다). 셋 다
+       list.js 보다 먼저여야 한다 — list.js 는 require() 없이 이 전역들을
+       그대로 쓴다(contextIsolation 렌더러라 require 가 없다). -->
   <script src="font-settings.js"></script>
   <script src="note-filter.js"></script>
+  <script src="line-model.js"></script>
   <script src="list.js"></script>
 </body>
 </html>

@@ -27,11 +27,15 @@ ALLOWED_METHODS = frozenset({
     "set_account",
     "list_notes",
     "create_note",
-    "create_checklist",
     "update_note",
     "update_checklist",
     "trash_note",
 })
+# create_checklist 는 없다. 이 앱이 만드는 메모는 언제나 text 노트다 —
+# 체크리스트는 메모의 종류가 아니라 본문 텍스트 안의 규약이기 때문이다
+# (app/renderer/line-model.js: "- [ ] 우유" / "- [x] 빵"). update_checklist 는
+# 남아 있다: 사용자가 **폰에서 만들어 둔** 진짜 List 노트도 열려서 고칠 수
+# 있어야 하고, List.text 는 읽기 전용이라 텍스트로는 쓸 수가 없기 때문이다.
 
 
 class AuthRequired(Exception):
@@ -105,7 +109,7 @@ def _serialize_items(node) -> list:
     ]
 
 
-def _validate_items(raw, *, require_id: bool) -> list:
+def _validate_items(raw) -> list:
     """렌더러가 보낸 항목 묶음을 검증하고 다듬는다.
 
     **이것이 update_note 의 색 검증과 같은 자리, 같은 성격의 코드다.** 렌더러는
@@ -119,14 +123,16 @@ def _validate_items(raw, *, require_id: bool) -> list:
     유효한 모양:
       - 전체가 리스트다.
       - 항목 하나하나가 dict 다.
-      - text 는 반드시 있고 문자열이다(빈 문자열은 유효하다 — 방금 만든 빈 줄).
+      - text 는 반드시 있고 문자열이다(빈 문자열은 유효하다 — 글자를 다 지운 줄).
       - checked 는 없으면 False, 있으면 진짜 bool 이어야 한다. isinstance(x, bool)
         로 보는 것이 핵심이다: 파이썬에서 True 는 int 이기도 해서 int 를 허용하면
         1/0 이 슬며시 통과한다.
-      - id 는 기존 항목을 고칠 때만 필요하고 비어 있지 않은 문자열이며 겹칠 수
-        없다. 새로 만들 때는 반대로 있으면 거절한다 — 항목 id 는 Keep 이 정한다.
+      - id 는 반드시 있고 비어 있지 않은 문자열이며 겹칠 수 없다. 이 경로는
+        **이미 있는 List 노트를 고치는 것뿐**이고 항목 id 는 Keep 이 정한다.
+        (예전에는 create_checklist 를 위해 id 없는 모양도 받았다. 그 RPC 가
+        사라지면서 이 갈래도 같이 없앴다 — 안 쓰이는 갈래는 검증되지 않는다.)
     """
-    allowed = {"id", "text", "checked"} if require_id else {"text", "checked"}
+    allowed = {"id", "text", "checked"}
     if not isinstance(raw, list):
         raise BadRequest(f"항목 묶음은 배열이어야 한다: {type(raw).__name__} 를 받았다")
 
@@ -148,16 +154,13 @@ def _validate_items(raw, *, require_id: bool) -> list:
         if not isinstance(checked, bool):
             raise BadRequest(f"{index}번째 항목의 checked 는 true/false 여야 한다")
 
-        item = {"text": text, "checked": checked}
-        if require_id:
-            item_id = entry.get("id")
-            if not isinstance(item_id, str) or item_id == "":
-                raise BadRequest(f"{index}번째 항목의 id 가 없다")
-            if item_id in seen_ids:
-                raise BadRequest(f"항목 id 가 겹친다: {item_id}")
-            seen_ids.add(item_id)
-            item["id"] = item_id
-        out.append(item)
+        item_id = entry.get("id")
+        if not isinstance(item_id, str) or item_id == "":
+            raise BadRequest(f"{index}번째 항목의 id 가 없다")
+        if item_id in seen_ids:
+            raise BadRequest(f"항목 id 가 겹친다: {item_id}")
+        seen_ids.add(item_id)
+        out.append({"text": text, "checked": checked, "id": item_id})
     return out
 
 
@@ -203,29 +206,18 @@ class KeepService:
         keep.sync()
         return {"note": _serialize(node)}
 
-    def create_checklist(self, title: str = "", items=None) -> dict:
-        """체크리스트를 새로 만든다.
-
-        Keep 의 노트는 Note 이거나 List 이고 둘 사이에 변환 경로가 없다 —
-        type 에 setter 도 convert* 메서드도 없다. 그래서 체크리스트는 만들 때
-        정해지며, 이미 text 노트로 존재하는 메모는 계속 text 노트다. (새로 만들고
-        옛것을 버리는 우회로는 Keep id 를 바꿔 버려서 state.json 의 위치/크기/
-        서체가 통째로 미아가 되므로 쓰지 않는다.)
-
-        createList 는 (text, checked) 튜플 목록을 받는다. 렌더러가 보낸 것은
-        {text, checked} dict 목록이므로 검증을 지난 뒤 여기서 튜플로 바꾼다.
-        """
-        keep = self._require_keep()
-        entries = _validate_items([] if items is None else items, require_id=False)
-        node = keep.createList(title, [(e["text"], e["checked"]) for e in entries])
-        keep.sync()
-        return {"note": _serialize(node)}
-
     def update_checklist(self, id: str, items, title=None) -> dict:  # noqa: A002
-        """체크리스트의 제목과 항목들을 고친다.
+        """**이미 있는** 체크리스트(Keep 의 List 노트)의 제목과 항목들을 고친다.
+
+        이 앱은 List 를 새로 만들지 않는다. 체크리스트는 이제 메모 본문 텍스트
+        안의 규약이기 때문이다(app/renderer/line-model.js). 그래도 사용자가
+        폰에서 만들어 둔 List 노트는 이미 계정에 있고, 그것도 열려서 쓸 수 있어야
+        한다 — List.text 는 항목을 이어 붙여 만드는 읽기 전용 프로퍼티라
+        update_note 로는 손댈 수 없으므로 이 경로가 남는다.
 
         할 수 있는 것은 **체크 토글과 항목 글자 수정**이다. 추가/삭제/순서 바꾸기는
-        여기 없다 — 없는 것이 조용히 되는 것보다 낫다.
+        여기 없다 — 없는 것이 조용히 되는 것보다 낫다. (포스트잇도 그 노트에서는
+        줄을 더하거나 지우려는 키를 거절하고 이유를 알린다.)
 
         update_note 와 같은 순서를 지킨다: 검증을 전부 끝낸 뒤에야 노드를 건드리고,
         sync 뒤에 서버가 돌려준 값과 우리가 보낸 값을 비교해 충돌을 판정한다.
@@ -237,7 +229,7 @@ class KeepService:
         if not _is_checklist(node):
             raise BadRequest(f"체크리스트가 아닌 메모다: {id}")
 
-        entries = _validate_items(items, require_id=True)
+        entries = _validate_items(items)
         by_id = {item.id: item for item in node.items}
         missing = [e["id"] for e in entries if e["id"] not in by_id]
         if missing:
