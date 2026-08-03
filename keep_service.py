@@ -27,7 +27,9 @@ ALLOWED_METHODS = frozenset({
     "set_account",
     "list_notes",
     "create_note",
+    "create_checklist",
     "update_note",
+    "update_checklist",
     "trash_note",
 })
 
@@ -44,13 +46,38 @@ class BadRequest(Exception):
     """요청 자체가 잘못됐다. 예: Keep 팔레트에 없는 색 이름."""
 
 
+def _is_checklist(node) -> bool:
+    """이 노드가 체크리스트(gkeepapi 의 List)인가.
+
+    Keep 의 노트는 Note **이거나** List 다. 둘은 TopLevelNode 밑의 형제 클래스고
+    서로 변환할 수 없다 — Note 에는 항목을 추가하는 메서드가 아예 없고, type 에는
+    setter 도 convert* 메서드도 없다. 그래서 이 판정은 한 번 정해지면 그 노트의
+    수명 내내 바뀌지 않는다.
+
+    isinstance 대신 node.type 을 보는 이유: 이 값은 gkeepapi 가 노드를 만들 때
+    심는 NodeType 열거형 그대로이고, 테스트의 대역 노드도 같은 열거형을 그대로
+    들고 있으면 실제와 같은 경로를 지난다. type 이 없는 객체(옛 대역)는 조용히
+    text 노트로 떨어진다 — 새 필드가 없다고 죽지 않는 쪽이 맞다.
+    """
+    return getattr(node, "type", None) is gkeepapi.node.NodeType.List
+
+
 def _serialize(node) -> dict:
     """Keep 노드를 RPC 로 넘길 수 있는 평평한 dict 로 변환한다.
 
     서식 정보는 Keep 에 존재하지 않으므로 여기에도 없다. 위치/크기/서식은
     Electron 쪽 state.json 이 노트 id 를 키로 따로 들고 있다.
+
+    kind 는 항상 실린다("note" 또는 "list"). items 는 체크리스트에만 실린다 —
+    text 노트의 직렬화 결과는 kind 한 필드가 더 붙는 것 말고는 예전과 정확히
+    같아야 하고, 특히 items 키가 생기면 안 된다. 렌더러는 그 키의 유무만으로도
+    어느 쪽인지 알 수 있지만, 그 판단을 kind 하나로 몰아 둔다.
+
+    체크리스트의 text 는 gkeepapi 가 만들어 주는 "☐ 우유\\n☑ 빵" 꼴이다. 우리가
+    만드는 값이 아니라 List.text 프로퍼티가 항목들을 이어 붙인 것이며, 읽기
+    전용이다 — 목록 창의 검색이 항목 글자까지 훑을 수 있는 것이 이 덕이다.
     """
-    return {
+    data = {
         "id": node.id,
         "title": node.title or "",
         "text": node.text or "",
@@ -58,7 +85,80 @@ def _serialize(node) -> dict:
         "pinned": bool(node.pinned),
         "archived": bool(node.archived),
         "updated": node.timestamps.updated.isoformat(),
+        "kind": "list" if _is_checklist(node) else "note",
     }
+    if data["kind"] == "list":
+        data["items"] = _serialize_items(node)
+    return data
+
+
+def _serialize_items(node) -> list:
+    """체크리스트의 항목들을 {id, text, checked} 목록으로 만든다.
+
+    id 는 gkeepapi 가 항목마다 들고 있는 안정적인 식별자다. 순서나 글자가 아니라
+    이 id 로 짝을 찾아야 "우유"가 두 줄 있는 체크리스트에서도 사용자가 누른 그
+    줄이 정확히 바뀐다.
+    """
+    return [
+        {"id": item.id, "text": item.text or "", "checked": bool(item.checked)}
+        for item in node.items
+    ]
+
+
+def _validate_items(raw, *, require_id: bool) -> list:
+    """렌더러가 보낸 항목 묶음을 검증하고 다듬는다.
+
+    **이것이 update_note 의 색 검증과 같은 자리, 같은 성격의 코드다.** 렌더러는
+    신뢰 경계의 바깥쪽이므로, 여기서 걸러지지 않은 값은 그대로 Keep 노드에
+    쓰이거나 gkeepapi 안에서 AttributeError 로 터진다. 잘못된 payload 는 죽지도
+    조용히 무시되지도 않고 BAD_REQUEST 로 떨어져야 한다.
+
+    부르는 쪽은 반드시 **노드를 건드리기 전에** 이 함수를 통과시켜야 한다.
+    항목 세 개 중 두 번째가 잘못됐을 때 첫 번째만 반쯤 적용된 채로 남으면 안 된다.
+
+    유효한 모양:
+      - 전체가 리스트다.
+      - 항목 하나하나가 dict 다.
+      - text 는 반드시 있고 문자열이다(빈 문자열은 유효하다 — 방금 만든 빈 줄).
+      - checked 는 없으면 False, 있으면 진짜 bool 이어야 한다. isinstance(x, bool)
+        로 보는 것이 핵심이다: 파이썬에서 True 는 int 이기도 해서 int 를 허용하면
+        1/0 이 슬며시 통과한다.
+      - id 는 기존 항목을 고칠 때만 필요하고 비어 있지 않은 문자열이며 겹칠 수
+        없다. 새로 만들 때는 반대로 있으면 거절한다 — 항목 id 는 Keep 이 정한다.
+    """
+    allowed = {"id", "text", "checked"} if require_id else {"text", "checked"}
+    if not isinstance(raw, list):
+        raise BadRequest(f"항목 묶음은 배열이어야 한다: {type(raw).__name__} 를 받았다")
+
+    out = []
+    seen_ids = set()
+    for index, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise BadRequest(f"{index}번째 항목이 객체가 아니다: {type(entry).__name__}")
+
+        unknown = sorted(set(entry) - allowed)
+        if unknown:
+            raise BadRequest(f"{index}번째 항목에 지원하지 않는 필드: {', '.join(unknown)}")
+
+        text = entry.get("text")
+        if not isinstance(text, str):
+            raise BadRequest(f"{index}번째 항목의 text 는 문자열이어야 한다")
+
+        checked = entry.get("checked", False)
+        if not isinstance(checked, bool):
+            raise BadRequest(f"{index}번째 항목의 checked 는 true/false 여야 한다")
+
+        item = {"text": text, "checked": checked}
+        if require_id:
+            item_id = entry.get("id")
+            if not isinstance(item_id, str) or item_id == "":
+                raise BadRequest(f"{index}번째 항목의 id 가 없다")
+            if item_id in seen_ids:
+                raise BadRequest(f"항목 id 가 겹친다: {item_id}")
+            seen_ids.add(item_id)
+            item["id"] = item_id
+        out.append(item)
+    return out
 
 
 class KeepService:
@@ -103,11 +203,87 @@ class KeepService:
         keep.sync()
         return {"note": _serialize(node)}
 
+    def create_checklist(self, title: str = "", items=None) -> dict:
+        """체크리스트를 새로 만든다.
+
+        Keep 의 노트는 Note 이거나 List 이고 둘 사이에 변환 경로가 없다 —
+        type 에 setter 도 convert* 메서드도 없다. 그래서 체크리스트는 만들 때
+        정해지며, 이미 text 노트로 존재하는 메모는 계속 text 노트다. (새로 만들고
+        옛것을 버리는 우회로는 Keep id 를 바꿔 버려서 state.json 의 위치/크기/
+        서체가 통째로 미아가 되므로 쓰지 않는다.)
+
+        createList 는 (text, checked) 튜플 목록을 받는다. 렌더러가 보낸 것은
+        {text, checked} dict 목록이므로 검증을 지난 뒤 여기서 튜플로 바꾼다.
+        """
+        keep = self._require_keep()
+        entries = _validate_items([] if items is None else items, require_id=False)
+        node = keep.createList(title, [(e["text"], e["checked"]) for e in entries])
+        keep.sync()
+        return {"note": _serialize(node)}
+
+    def update_checklist(self, id: str, items, title=None) -> dict:  # noqa: A002
+        """체크리스트의 제목과 항목들을 고친다.
+
+        할 수 있는 것은 **체크 토글과 항목 글자 수정**이다. 추가/삭제/순서 바꾸기는
+        여기 없다 — 없는 것이 조용히 되는 것보다 낫다.
+
+        update_note 와 같은 순서를 지킨다: 검증을 전부 끝낸 뒤에야 노드를 건드리고,
+        sync 뒤에 서버가 돌려준 값과 우리가 보낸 값을 비교해 충돌을 판정한다.
+        """
+        keep = self._require_keep()
+        node = keep.get(id)
+        if node is None:
+            raise NotFound(id)
+        if not _is_checklist(node):
+            raise BadRequest(f"체크리스트가 아닌 메모다: {id}")
+
+        entries = _validate_items(items, require_id=True)
+        by_id = {item.id: item for item in node.items}
+        missing = [e["id"] for e in entries if e["id"] not in by_id]
+        if missing:
+            # 조용히 건너뛰지 않는다. 여기서 무시하면 사용자가 방금 고친 줄이
+            # 아무 신호 없이 사라진다 — 다른 기기가 그 항목을 지웠을 때 정확히
+            # 그런 일이 벌어지고, 그때야말로 사용자가 알아야 할 때다.
+            raise BadRequest(f"이 체크리스트에 없는 항목 id: {', '.join(missing)}")
+
+        if title is not None:
+            node.title = title
+        for entry in entries:
+            item = by_id[entry["id"]]
+            item.text = entry["text"]
+            item.checked = entry["checked"]
+        sent_items = [dict(e) for e in entries]
+
+        keep.sync()
+
+        after = keep.get(id)
+        if after is None:
+            raise NotFound(id)
+        # update_note 의 sentText 비교와 같은 뜻이다: sync 는 서버 판정 결과를
+        # 로컬 노드에 덮어쓰므로, 우리가 보낸 것과 다르면 다른 기기의 편집이
+        # 이겼다는 뜻이다. 다른 기기가 항목을 하나 더 넣었어도 길이가 달라져
+        # 충돌로 잡힌다 — 우리가 보낼 수 없었던 항목이기 때문이다.
+        # (dict 비교는 키 순서를 따지지 않으므로 두 목록을 그대로 견줄 수 있다.)
+        return {
+            "note": _serialize(after),
+            "conflict": _serialize_items(after) != sent_items,
+            "sentItems": sent_items,
+        }
+
     def update_note(self, id: str, title=None, text=None, color=None) -> dict:  # noqa: A002
         keep = self._require_keep()
         node = keep.get(id)
         if node is None:
             raise NotFound(id)
+
+        # 체크리스트의 본문은 여기로 오면 안 된다. List.text 는 항목들을 이어
+        # 붙여 만드는 **읽기 전용** 프로퍼티라서, 대입하면 AttributeError 로
+        # INTERNAL 오류가 난다. 색과 같은 방식으로 미리 걸러 BAD_REQUEST 를
+        # 돌려준다 — 무엇을 잘못했는지 알 수 있는 오류가 스택 트레이스보다 낫다.
+        if text is not None and _is_checklist(node):
+            raise BadRequest(
+                f"체크리스트의 본문은 update_note 로 바꿀 수 없다 (update_checklist 를 쓴다): {id}"
+            )
 
         # 색은 자유 텍스트가 아니라 Keep 이 실제로 지원하는 12개 이름 중 하나다.
         # gkeepapi.node.ColorValue 의 멤버 이름과 대조하는 것 자체가 그 12개

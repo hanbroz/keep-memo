@@ -7,6 +7,19 @@ contextBridge.exposeInMainWorld('keepSticky', {
   listNotes: () => ipcRenderer.invoke('notes:list'),
   createNote: (title, text) => ipcRenderer.invoke('notes:create', title, text),
   updateNote: (id, patch) => ipcRenderer.invoke('notes:update', id, patch),
+  // 체크리스트. Keep 의 노트는 Note 이거나 List 이고 둘 사이에 변환 경로가 없어서
+  // (gkeepapi 의 type 에는 setter 도 convert* 도 없다) 만들 때 종류가 정해진다 —
+  // 그래서 만들기도 저장하기도 text 메모와 따로 있다. items 는
+  // [{ id, text, checked }] 이고, 검증은 checklist-items.js 한 벌을 렌더러/main/
+  // 사이드카가 나눠 쓴다.
+  createChecklist: (title, items) => ipcRenderer.invoke('notes:createChecklist', title, items),
+  updateChecklist: (id, patch) => ipcRenderer.invoke('notes:updateChecklist', id, patch),
+  // 포스트잇 본문에서 Ctrl+클릭한 주소를 기본 브라우저로 연다. 렌더러가 이미
+  // 한 번 걸렀더라도 main 이 다시 검증한다 — http/https 가 아니면 열리지 않는다.
+  // 여기서 shell 을 직접 노출하지 않는 것이 핵심이다: 렌더러가 닿는 것은 "주소
+  // 문자열 하나를 보내 본다"는 이 함수뿐이고, 실제 openExternal 호출은 검증을
+  // 지난 뒤 main 에서만 일어난다.
+  openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
   // 지우기. Keep 휴지통으로 보내는 것이고 7일간 복구할 수 있다(사이드카의
   // node.trash()). 포스트잇의 [삭제] 버튼과 우클릭이 둘 다 확인 뒤에 이것 하나를
   // 부른다 — ✕(closeNote)와 목록 창의 체크 해제는 여기 오지 않는다.

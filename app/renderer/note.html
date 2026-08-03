@@ -111,6 +111,35 @@
     /* 제목/본문을 아직(또는 영영) 불러오지 못한 상태. 비어 있는 채로 편집 가능하게
        열어두면 한 글자만 쳐도 Keep 의 원본이 그 한 글자로 덮인다. */
     #title[readonly], #body[readonly] { color: rgba(0, 0, 0, 0.45); background: rgba(0, 0, 0, 0.04); cursor: default; }
+
+    /* --- 체크리스트 --------------------------------------------------------
+       Keep 의 노트는 Note 이거나 List 다. 체크리스트인 메모에서는 #body
+       (textarea)가 통째로 숨고 그 자리에 이 목록이 선다 — 한 메모 안에서 본문과
+       체크박스가 공존할 수 없기 때문이다(Keep 자체의 제약이다).
+
+       항목 글자는 <input type="text"> 다. Keep 에서 온 외부 데이터이므로 값은
+       .value 로만 넣는다 — note.js 어디에도 innerHTML 은 없다.
+
+       서체는 #body 와 같은 var(--fs-body) 와 font-family: inherit 을 쓴다.
+       그래야 목록 창 [설정] 의 공통 서체와 이 메모만의 재정의가 항목에도 그대로
+       적용된다(applyFontSettings 가 <html> 에 심는 토큰을 물려받는다). */
+    #items { flex: 1; overflow-y: auto; padding: 2px 16px 14px; margin: 0; list-style: none; }
+    #items li { display: flex; align-items: baseline; gap: 9px; padding: 2px 0; }
+    #items input[type="checkbox"] {
+      flex: none; width: 15px; height: 15px; margin: 0; cursor: pointer;
+      position: relative; top: 2px;
+    }
+    #items input[type="text"] {
+      flex: 1; min-width: 0; border: 0; outline: 0; padding: 1px 2px;
+      background: transparent; color: inherit;
+      font-family: inherit; font-size: var(--fs-body); line-height: var(--lh-body);
+      border-bottom: 1px solid transparent;
+    }
+    #items input[type="text"]:focus { border-bottom-color: rgba(0, 0, 0, 0.25); }
+    /* 체크된 줄은 글자에 줄을 긋고 흐리게 둔다. 남은 일이 무엇인지 한눈에 보여야
+       체크리스트다. */
+    #items li.checked input[type="text"] { color: var(--ink-dim); text-decoration: line-through; }
+    #items input[readonly], #items input:disabled { cursor: default; color: rgba(0, 0, 0, 0.45); }
     #badge { display: none; padding: 8px 16px; background: #f59e0b; color: #fff;
              font-size: var(--fs-xs); line-height: var(--lh-body); }
     #badge.show { display: block; }
@@ -182,7 +211,8 @@
        창 전체가 화면 오른쪽 가장자리에 붙은 좁은 세로 띠가 된다. 배경은 위
        body 규칙에서 그대로 온다. 눌러서 펼쳐야 하므로 드래그 영역이 아니다. */
     #bookmark { display: none; }
-    body.folded #bar, body.folded #badge, body.folded #title, body.folded #body, body.folded #lookPanel { display: none; }
+    body.folded #bar, body.folded #badge, body.folded #title, body.folded #body,
+    body.folded #items, body.folded #lookPanel { display: none; }
     body.folded #bookmark {
       -webkit-app-region: no-drag;
       display: flex; flex: 1; justify-content: center;
@@ -251,16 +281,33 @@
        굵게 렌더링할 수 없다. 제목을 실제로 굵고 크게 보여주려면 별개의 컨트롤이
        필요했다. -->
   <input id="title" type="text" placeholder="제목" spellcheck="false" readonly>
+  <!-- 둘 중 하나만 보인다. Keep 의 노트는 Note 이거나 List 이고, 한 메모 안에서
+       본문과 체크박스가 공존할 수 없다 — Note 에는 항목을 추가하는 메서드가
+       아예 없고 둘 사이에 변환 경로도 없다(type 에 setter 가 없다). 그래서
+       종류는 메모를 만들 때 정해지고, 이미 text 메모인 것은 계속 text 메모다.
+       note.js 가 불러온 노트의 kind 를 보고 한쪽을 숨긴다.
+
+       본문(#body)에서는 Ctrl+클릭으로 주소를 열 수 있다. textarea 에는 링크
+       요소가 없어서 누를 것도 꾸밀 것도 없다 — 클릭이 캐럿을 옮긴다는 사실을
+       거꾸로 이용해 selectionStart 에서 좌우로 뻗어 주소를 찾는다(url-open.js).
+       그냥 클릭이 아니라 Ctrl+클릭인 이유가 이것이다: 평범한 클릭은 여전히
+       글자 사이에 커서를 놓는 일을 해야 한다. -->
   <textarea id="body" spellcheck="false" readonly></textarea>
+  <!-- 체크리스트의 항목들. note.js 가 createElement 로 만든다 — 항목 글자는
+       Keep 에서 온 외부 데이터이므로 innerHTML 을 쓰지 않고 .value 로만 넣는다. -->
+  <ul id="items" hidden></ul>
   <!-- 접었을 때만 보인다. 세로 글자는 note.js 가 createElement 로 한 글자씩
        만든다 — Keep 제목은 외부 데이터이므로 innerHTML 을 쓰지 않는다. -->
   <div id="bookmark" title="펼치기"><div id="bookmark-label"></div></div>
-  <!-- 순서가 중요하다. 아래 셋은 전부 note.js 보다 먼저 와야 한다 — 순수 함수와
+  <!-- 순서가 중요하다. 아래 다섯은 전부 note.js 보다 먼저 와야 한다 — 순수 함수와
        상수가 여기서 전역으로 걸리고, note.js 는 require() 없이 그 전역을 그대로
        쓴다(contextIsolation 렌더러라 require 가 없다). note-font.js 는 다시
        font-settings.js 의 FONT_CHOICES / clampPt / normalizeFontSettings 를
-       쓰므로 그보다 뒤여야 한다. -->
+       쓰므로 그보다 뒤여야 한다. checklist-items.js 와 url-open.js 는 서로도,
+       다른 어느 것도 참조하지 않으므로 note.js 보다 앞이기만 하면 된다. -->
   <script src="bookmark-text.js"></script>
+  <script src="checklist-items.js"></script>
+  <script src="url-open.js"></script>
   <script src="font-settings.js"></script>
   <script src="note-font.js"></script>
   <script src="note.js"></script>

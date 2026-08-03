@@ -1,7 +1,7 @@
 'use strict'
 const path = require('node:path')
 const electron = require('electron')
-const { app, BrowserWindow, ipcMain, session, dialog, Tray, Menu, nativeImage } = electron
+const { app, BrowserWindow, ipcMain, session, dialog, Tray, Menu, nativeImage, shell } = electron
 // screen 모듈은 app 의 ready 이후에만 쓸 수 있다. 위에서 같이 구조 분해하면
 // 모듈 적재 시점(= ready 이전)에 건드리게 되므로, 쓸 때 꺼내 쓴다. 이 게터를
 // 부르는 코드는 전부 ready 이후 경로(접기/펼치기/재배치)에만 있다.
@@ -13,7 +13,12 @@ const { resolveSidecarCommand } = require('./sidecar-path')
 const { validateEmail } = require('./email-validate')
 const { bookmarkBounds, BOOKMARK } = require('./bookmark-layout')
 const { reconcileSelection } = require('./selection-reconcile')
-const { validateNotePatch } = require('./note-patch')
+const { validateNotePatch, validateChecklistPatch } = require('./note-patch')
+// Ctrl+클릭으로 연 주소를 **여기서 다시 검증한다.** 렌더러도 같은 함수를 쓰지만
+// (즉시 안내를 띄우기 위해서다), 렌더러는 신뢰 경계의 바깥쪽이라 그쪽 검사만으로는
+// 검사가 아니다. shell.openExternal() 은 문자열을 그대로 운영체제에 넘기고, 그
+// 문자열의 출처는 Keep 이라는 외부 데이터다.
+const { sanitizeUrl } = require('./renderer/url-open')
 const { trayMenuTemplate, TRAY_TOOLTIP } = require('./tray-menu')
 const { TRAY_ICON_DATA_URL } = require('./tray-icon')
 const { extractIncomingVersion, describeVersionMismatch } = require('./version-notice')
@@ -736,6 +741,15 @@ app.whenReady().then(async () => {
     const res = await sidecar.call('create_note', { title, text })
     return res.note
   })
+
+  // 체크리스트 만들기. Keep 의 노트는 Note 이거나 List 이고 둘 사이에 변환
+  // 경로가 없으므로(gkeepapi 의 type 에는 setter 도 convert* 도 없다), 어느
+  // 쪽인지는 만드는 이 순간에 정해진다. 그래서 목록 창의 [+ 새 메모] 와
+  // [+ 새 체크리스트] 가 서로 다른 핸들러로 갈라진다.
+  ipcMain.handle('notes:createChecklist', async (_e, title, items) => {
+    const res = await sidecar.call('create_checklist', { title, items })
+    return res.note
+  })
   ipcMain.handle('auth:exchange', async (_e, token) => {
     try {
       await sidecar.call('exchange_cookie', { email: accountEmail, oauth_token: token })
@@ -854,6 +868,62 @@ app.whenReady().then(async () => {
       store.setNote(id, { conflictBackup: sentContent })
       store.save()
       return { ok: false, message: err.message, code: err.code }
+    }
+  })
+
+  // 체크리스트 저장. notes:update 와 같은 뼈대다 — 화이트리스트 검증, 휴지통
+  // 가드, conflictBackup 보관, 오류를 던지지 않고 shape 로 돌려주기까지 같다.
+  //
+  // **conflictBackup 에 무엇을 담는가**가 이 핸들러의 핵심 결정이다. text 노트는
+  // { title, text } 를 담는다 — 사용자가 화면에서 보고 있던 두 칸 그대로다.
+  // 체크리스트에는 본문 칸이 없고 대신 항목 줄들이 있으므로 { title, items } 를
+  // 담는다. 같은 원칙(화면에 있던 것을 그대로, 잃지 않게)을 그 창의 실제 모양에
+  // 맞춘 것이다. items 에는 항목마다 id/text/checked 가 다 들어 있어서, 나중에
+  // 이 보관본을 사람이 읽어도 무엇이 저장되지 못했는지 알 수 있다.
+  //
+  // color 전용 patch 같은 것이 없으므로(색은 여전히 notes:update 로 간다)
+  // 여기서는 sentContent 가 null 이 되는 경우가 없다 — 항상 보관할 것이 있다.
+  ipcMain.handle('notes:updateChecklist', async (_e, id, patch) => {
+    const validated = validateChecklistPatch(patch)
+    if (!validated.ok) {
+      return { ok: false, message: validated.message, code: 'BAD_REQUEST' }
+    }
+    if (trashedNotes.has(id)) {
+      return { ok: false, message: '휴지통으로 보낸 메모입니다.', code: 'NOTE_TRASHED' }
+    }
+    const sentContent = { title: validated.params.title, items: validated.params.items }
+    try {
+      const res = await sidecar.call('update_checklist', { id, ...validated.params })
+      store.setNote(id, { conflictBackup: res.conflict ? sentContent : null })
+      store.save()
+      return { ok: true, ...res }
+    } catch (err) {
+      store.setNote(id, { conflictBackup: sentContent })
+      store.save()
+      return { ok: false, message: err.message, code: err.code }
+    }
+  })
+
+  // 본문의 URL 을 기본 브라우저로 연다 (포스트잇에서 Ctrl+클릭).
+  //
+  // **여기가 진짜 검증 지점이다.** 렌더러도 같은 sanitizeUrl 을 부르지만 그것은
+  // 사용자에게 즉시 안내를 띄우기 위한 것이고, 렌더러는 신뢰 경계의 바깥쪽이다 —
+  // 그쪽에만 있는 검사는 검사가 아니다. shell.openExternal() 은 받은 문자열을
+  // 그대로 운영체제에 넘기고, 그 문자열은 Keep 에서 온 외부 데이터라 무엇이든
+  // 들어 있을 수 있다. http/https 가 아니면 어떤 것도 여기를 통과하지 못한다.
+  //
+  // 넘기는 값은 렌더러가 보낸 원문이 아니라 sanitizeUrl 이 돌려준 parsed.href 다 —
+  // 파서가 정규화하고 퍼센트 인코딩까지 마친 값이다.
+  ipcMain.handle('shell:openExternal', async (_e, raw) => {
+    const checked = sanitizeUrl(raw)
+    if (!checked.ok) {
+      return { ok: false, code: checked.reason }
+    }
+    try {
+      await shell.openExternal(checked.url)
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, code: 'OPEN_FAILED', message: err.message }
     }
   })
 

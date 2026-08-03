@@ -108,9 +108,15 @@
     .unit { color: var(--ink-dim); font-size: var(--fs-body); }
     .field-actions { display: flex; gap: 8px; margin-top: 12px; }
 
+    /* flex-wrap 이 필요한 이유: 이 줄에 만들기 버튼이 둘이 되었다([+ 새 메모],
+       [+ 체크리스트]). 창은 360px 까지 좁힐 수 있고(main.js 의 minWidth), 사용자가
+       [설정]에서 본문 크기를 24pt 까지 올릴 수 있으므로 한 줄에 다 서지 못하는
+       조합이 실제로 존재한다. 접히지 않으면 줄 오른쪽 끝의 [설정]이 창 밖으로
+       밀려나 닿을 수 없게 된다 — 넘치면 아랫줄로 내려오는 편이 낫다.
+       row-gap 을 따로 두어 두 줄이 되었을 때 서로 붙지 않게 한다. */
     footer {
       flex: none;
-      display: flex; align-items: center; gap: 12px;
+      display: flex; align-items: center; flex-wrap: wrap; gap: 10px 12px;
       padding: 14px 20px; border-top: 1px solid var(--line);
     }
     button {
@@ -158,7 +164,13 @@
   </section>
   <footer>
     <button id="apply" type="button">완료</button>
+    <!-- 만들기 버튼이 둘인 것은 Keep 자체의 제약이다. 노트는 Note 이거나 List 이고
+         둘 사이에 변환 경로가 없어서(gkeepapi 의 type 에는 setter 도 convert* 도
+         없다) 종류가 만드는 순간에 정해진다. 나중에 "체크리스트로 바꾸기"를 둘
+         수 없으므로 여기서 갈라 두는 것 말고는 방법이 없다. 둘을 나란히 두어
+         무엇을 만드는지 누르기 전에 보이게 한다. -->
     <button id="new" type="button">+ 새 메모</button>
+    <button id="new-checklist" type="button" title="체크박스가 있는 메모를 만듭니다 (나중에 일반 메모로 바꿀 수는 없습니다)">+ 체크리스트</button>
     <span id="status" role="status"></span>
     <button id="settings-toggle" type="button" aria-expanded="false" aria-controls="settings">설정</button>
   </footer>

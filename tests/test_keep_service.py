@@ -109,6 +109,10 @@ class FakeColor:
 
 
 class FakeNode:
+    """text 노트 대역. type 은 실제 gkeepapi 가 노드에 심는 열거형 그대로다 —
+    _is_checklist 가 보는 것이 바로 이 값이라서, 대역도 같은 값을 들고 있어야
+    실제와 같은 경로를 지난다."""
+
     def __init__(self, node_id="n1", title="", text=""):
         self.id = node_id
         self.title = title
@@ -118,9 +122,51 @@ class FakeNode:
         self.archived = False
         self.trashed = False
         self.timestamps = FakeTimestamps()
+        self.type = ks.gkeepapi.node.NodeType.Note
 
     def trash(self):
         self.trashed = True
+
+
+class FakeListItem:
+    """체크리스트 항목 하나. id 는 Keep 이 정하는 안정적인 식별자다."""
+
+    def __init__(self, item_id, text="", checked=False):
+        self.id = item_id
+        self.text = text
+        self.checked = checked
+
+
+class FakeListNode(FakeNode):
+    """체크리스트 대역.
+
+    실제 gkeepapi.node.List 를 그대로 따라간다:
+      - type 이 NodeType.List 다.
+      - text 는 항목들을 이어 붙여 만드는 **읽기 전용** 프로퍼티다. 대입하면
+        AttributeError 가 난다 — update_note 가 체크리스트 본문을 건드리지 못하게
+        막는 가드가 정말로 필요한지를 이 대역이 증명한다.
+    """
+
+    def __init__(self, node_id="n1", title="", items=None):
+        super().__init__(node_id, title, "")
+        self.type = ks.gkeepapi.node.NodeType.List
+        self.items = [
+            FakeListItem(f"{node_id}-i{n + 1}", text, checked)
+            for n, (text, checked) in enumerate(items or [])
+        ]
+
+    @property
+    def text(self):
+        return "\n".join(
+            f"{'☑' if i.checked else '☐'} {i.text}" for i in self.items
+        )
+
+    @text.setter
+    def text(self, value):
+        # FakeNode.__init__ 이 self.text = "" 를 하므로 그것만 통과시킨다.
+        # 그 밖의 대입은 실제 List 와 같이 거절한다.
+        if value != "":
+            raise AttributeError("property 'text' of 'List' object has no setter")
 
 
 class FakeKeepWithNodes(FakeKeep):
@@ -130,9 +176,17 @@ class FakeKeepWithNodes(FakeKeep):
         super().__init__()
         self.nodes = {}
         self.server_override = None
+        # 체크리스트 쪽 "다른 기기가 이겼다"를 흉내내는 훅. sync 때 한 번
+        # 불리고, 인자로 받은 노드를 마음대로 고칠 수 있다.
+        self.server_items_override = None
 
     def createNote(self, title=None, text=None):  # noqa: N802 - gkeepapi 명명 규칙
         node = FakeNode(f"n{len(self.nodes) + 1}", title or "", text or "")
+        self.nodes[node.id] = node
+        return node
+
+    def createList(self, title=None, items=None):  # noqa: N802 - gkeepapi 명명 규칙
+        node = FakeListNode(f"n{len(self.nodes) + 1}", title or "", items or [])
         self.nodes[node.id] = node
         return node
 
@@ -146,7 +200,13 @@ class FakeKeepWithNodes(FakeKeep):
         super().sync(resync)
         if self.server_override is not None:
             for node in self.nodes.values():
+                if isinstance(node, FakeListNode):
+                    continue  # 체크리스트의 text 는 읽기 전용이다
                 node.text = self.server_override
+        if self.server_items_override is not None:
+            for node in self.nodes.values():
+                if isinstance(node, FakeListNode):
+                    self.server_items_override(node)
 
 
 @pytest.fixture
@@ -292,6 +352,209 @@ def test_update_title_and_text_together_detects_conflict_when_server_overrides(a
     assert res["sentText"] == "PC에서 고친 내용"
     assert res["note"]["title"] == "새 제목"  # title 은 충돌 판정과 무관하게 그대로 적용된다
     assert res["note"]["text"] == "폰에서 고친 내용"
+
+
+# --- 체크리스트 -------------------------------------------------------------
+
+
+def test_text_note_serializes_unchanged_except_for_kind(account):
+    """text 노트의 직렬화 결과는 예전 그대로여야 한다.
+
+    새 필드는 kind 하나뿐이고, items 키는 **생기면 안 된다** — 렌더러는 kind 로
+    분기하지만, 여기에 빈 items 가 딸려 오면 "항목이 하나도 없는 체크리스트"와
+    구별되지 않는다.
+    """
+    created = _call(account, "create_note", title="제목", text="본문")["result"]["note"]
+    assert set(created) == {"id", "title", "text", "color", "pinned", "archived",
+                            "updated", "kind"}
+    assert created["kind"] == "note"
+    assert "items" not in created
+    # 예전 일곱 필드의 값도 그대로다.
+    assert created["title"] == "제목"
+    assert created["text"] == "본문"
+    assert created["color"] == "Yellow"
+    assert created["pinned"] is False
+    assert created["archived"] is False
+    assert created["updated"] == "2026-07-30T09:00:00"
+
+
+def test_create_checklist_with_items(account):
+    res = _call(account, "create_checklist", title="장보기",
+                items=[{"text": "우유", "checked": False},
+                       {"text": "빵", "checked": True}])["result"]["note"]
+    assert res["kind"] == "list"
+    assert res["title"] == "장보기"
+    assert [i["text"] for i in res["items"]] == ["우유", "빵"]
+    assert [i["checked"] for i in res["items"]] == [False, True]
+    # 항목마다 안정적인 id 가 있어야 한다 — 순서나 글자가 아니라 이것으로 짝을 찾는다.
+    assert all(i["id"] for i in res["items"])
+    assert len({i["id"] for i in res["items"]}) == 2
+
+
+def test_create_checklist_appears_in_list_notes_as_a_list(account):
+    _call(account, "create_checklist", title="장보기", items=[{"text": "우유"}])
+    notes = _call(account, "list_notes")["result"]["notes"]
+    assert len(notes) == 1
+    assert notes[0]["kind"] == "list"
+    # text 는 gkeepapi 의 List.text 그대로다(항목을 이어 붙인 것). 목록 창의
+    # 검색이 항목 글자까지 훑을 수 있는 것이 이 덕이다.
+    assert "우유" in notes[0]["text"]
+
+
+def test_create_checklist_without_items_is_empty(account):
+    res = _call(account, "create_checklist", title="빈 목록")["result"]["note"]
+    assert res["kind"] == "list"
+    assert res["items"] == []
+
+
+def test_toggle_item_checked(account):
+    created = _call(account, "create_checklist", title="장보기",
+                    items=[{"text": "우유", "checked": False},
+                           {"text": "빵", "checked": False}])["result"]["note"]
+    items = [dict(i) for i in created["items"]]
+    items[0]["checked"] = True
+    res = _call(account, "update_checklist", id=created["id"], items=items)["result"]
+    assert res["conflict"] is False
+    assert [i["checked"] for i in res["note"]["items"]] == [True, False]
+    # 글자는 건드리지 않았다.
+    assert [i["text"] for i in res["note"]["items"]] == ["우유", "빵"]
+
+
+def test_edit_item_text(account):
+    created = _call(account, "create_checklist", title="장보기",
+                    items=[{"text": "우유"}])["result"]["note"]
+    items = [dict(i) for i in created["items"]]
+    items[0]["text"] = "우유 2L"
+    res = _call(account, "update_checklist", id=created["id"], items=items)["result"]
+    assert res["conflict"] is False
+    assert res["note"]["items"][0]["text"] == "우유 2L"
+    # id 는 그대로다 — 글자를 고쳤다고 새 항목이 되면 안 된다.
+    assert res["note"]["items"][0]["id"] == created["items"][0]["id"]
+
+
+def test_update_checklist_can_change_title_too(account):
+    """제목 칸은 두 종류 모두에 있다. 체크리스트도 제목을 갖는다."""
+    created = _call(account, "create_checklist", title="원래 제목",
+                    items=[{"text": "우유"}])["result"]["note"]
+    res = _call(account, "update_checklist", id=created["id"],
+                title="새 제목", items=created["items"])["result"]
+    assert res["note"]["title"] == "새 제목"
+    assert res["conflict"] is False
+
+
+def test_update_checklist_detects_conflict_when_server_overrides(account):
+    """sync 도중 다른 기기가 항목을 고쳤다면 충돌로 잡혀야 한다 — update_note 의
+    sentText 판정과 같은 뜻이다."""
+    created = _call(account, "create_checklist", title="장보기",
+                    items=[{"text": "우유"}])["result"]["note"]
+
+    def phone_edit(node):
+        node.items[0].text = "폰에서 고친 항목"
+
+    account._keep.server_items_override = phone_edit
+    items = [dict(i) for i in created["items"]]
+    items[0]["text"] = "PC에서 고친 항목"
+    res = _call(account, "update_checklist", id=created["id"], items=items)["result"]
+    assert res["conflict"] is True
+    assert res["sentItems"][0]["text"] == "PC에서 고친 항목"
+    assert res["note"]["items"][0]["text"] == "폰에서 고친 항목"
+
+
+@pytest.mark.parametrize("bad_items", [
+    "우유",                                   # 배열이 아니다
+    {"text": "우유"},                          # 배열이 아니다(객체 하나)
+    ["우유"],                                  # 항목이 객체가 아니다
+    [{"text": 42}],                           # text 가 문자열이 아니다
+    [{"checked": True}],                      # text 가 없다
+    [{"text": "우유", "checked": "true"}],     # checked 가 문자열이다
+    [{"text": "우유", "checked": 1}],          # checked 가 int 다(파이썬에서 bool 은 int 다)
+    [{"text": "우유", "sort": 999}],           # 모르는 필드
+])
+def test_update_checklist_malformed_payload_is_bad_request(account, bad_items):
+    """렌더러는 신뢰할 수 없다. 잘못된 payload 는 죽지도 조용히 무시되지도 않고
+    BAD_REQUEST 로 떨어져야 한다 — update_note 의 색 검증과 같은 성격이다."""
+    created = _call(account, "create_checklist", title="장보기",
+                    items=[{"text": "우유", "checked": False}])["result"]["note"]
+    res = _call(account, "update_checklist", id=created["id"], items=bad_items)
+    assert res["error"]["code"] == "BAD_REQUEST"
+    # 거절됐으니 노드는 손대지 않은 채로 남아야 한다.
+    after = _call(account, "list_notes")["result"]["notes"][0]
+    assert after["items"] == created["items"]
+
+
+def test_update_checklist_rejects_partial_application(account):
+    """항목 셋 중 둘째가 잘못됐으면 첫째도 적용되면 안 된다. 검증은 노드를
+    건드리기 **전에** 전부 끝나야 한다(update_note 의 색 검증과 같은 이유)."""
+    created = _call(account, "create_checklist", title="장보기",
+                    items=[{"text": "우유"}, {"text": "빵"}])["result"]["note"]
+    items = [dict(i) for i in created["items"]]
+    items[0]["text"] = "적용되면 안 되는 값"
+    items[1]["checked"] = "true"  # 무효
+    res = _call(account, "update_checklist", id=created["id"], items=items)
+    assert res["error"]["code"] == "BAD_REQUEST"
+    after = _call(account, "list_notes")["result"]["notes"][0]
+    assert [i["text"] for i in after["items"]] == ["우유", "빵"]
+
+
+def test_update_checklist_unknown_item_id_is_bad_request(account):
+    """이 체크리스트에 없는 항목 id 는 조용히 건너뛰지 않는다."""
+    created = _call(account, "create_checklist", title="장보기",
+                    items=[{"text": "우유"}])["result"]["note"]
+    res = _call(account, "update_checklist", id=created["id"],
+                items=[{"id": "없는항목id", "text": "우유", "checked": True}])
+    assert res["error"]["code"] == "BAD_REQUEST"
+
+
+def test_update_checklist_missing_note_is_not_found(account):
+    res = _call(account, "update_checklist", id="없는id", items=[])
+    assert res["error"]["code"] == "NOT_FOUND"
+
+
+def test_update_checklist_on_text_note_is_bad_request(account):
+    """text 노트에는 항목이 없다. 변환 경로도 없으므로 거절이 맞다."""
+    created = _call(account, "create_note", title="t", text="본문")["result"]["note"]
+    res = _call(account, "update_checklist", id=created["id"], items=[])
+    assert res["error"]["code"] == "BAD_REQUEST"
+
+
+def test_create_checklist_rejects_client_supplied_item_id(account):
+    """항목 id 는 Keep 이 정한다. 렌더러가 정해 보내면 거절한다."""
+    res = _call(account, "create_checklist", title="장보기",
+                items=[{"id": "내가정한id", "text": "우유"}])
+    assert res["error"]["code"] == "BAD_REQUEST"
+
+
+def test_update_note_cannot_write_text_of_a_checklist(account):
+    """List.text 는 읽기 전용 프로퍼티라 대입하면 AttributeError 가 난다.
+    INTERNAL 스택 트레이스가 아니라 BAD_REQUEST 로 걸러져야 한다."""
+    created = _call(account, "create_checklist", title="장보기",
+                    items=[{"text": "우유"}])["result"]["note"]
+    res = _call(account, "update_note", id=created["id"], text="본문으로 덮어쓰기")
+    assert res["error"]["code"] == "BAD_REQUEST"
+    after = _call(account, "list_notes")["result"]["notes"][0]
+    assert [i["text"] for i in after["items"]] == ["우유"]
+
+
+def test_update_note_can_still_change_a_checklists_title_and_color(account):
+    """제목과 색은 두 종류 모두에 있다. 체크리스트라고 막을 이유가 없다."""
+    created = _call(account, "create_checklist", title="원래 제목",
+                    items=[{"text": "우유"}])["result"]["note"]
+    res = _call(account, "update_note", id=created["id"],
+                title="새 제목", color="Blue")["result"]
+    assert res["note"]["title"] == "새 제목"
+    assert res["note"]["color"] == "Blue"
+    assert res["note"]["kind"] == "list"
+
+
+def test_checklist_rpc_methods_are_whitelisted(service):
+    """ALLOWED_METHODS 가 보안 경계다. 새 메서드는 여기 올라야 닿을 수 있고,
+    올리지 않은 이름은 여전히 닿을 수 없어야 한다."""
+    assert "create_checklist" in ks.ALLOWED_METHODS
+    assert "update_checklist" in ks.ALLOWED_METHODS
+    # 화이트리스트에 없는 내부 헬퍼는 여전히 부를 수 없다.
+    for hidden in ["_validate_items", "_serialize_items", "_is_checklist"]:
+        res = ks.handle(service, json.dumps({"id": 1, "method": hidden, "params": {}}))
+        assert res["error"]["code"] == "UNKNOWN_METHOD", hidden
 
 
 def test_serve_survives_cp949_stdout_with_emoji_note(account):

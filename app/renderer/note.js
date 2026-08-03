@@ -13,6 +13,18 @@ let timer = null
 // 우클릭 후 취소처럼 타이머 없이도 미저장 편집이 남는 경로가 있기 때문이다.
 let savedTitle = ''
 let savedText = ''
+// 이 메모가 체크리스트인가. Keep 의 노트는 Note 이거나 List 이고 둘 사이에 변환
+// 경로가 없으므로(gkeepapi 의 type 에는 setter 도 convert* 도 없다) 이 값은 불러온
+// 뒤로 바뀌지 않는다 — 창이 뜬 뒤에 종류가 달라지는 경로는 없다.
+let isChecklist = false
+// 체크리스트일 때, 서버에 마지막으로 반영된 항목 묶음의 서명(checklist-items.js).
+// text 노트의 savedText 와 정확히 같은 자리에 있는 값이다: 미저장 편집이 있는가를
+// 이것과 지금 화면의 서명을 견주어 판단한다.
+let savedItemsSig = ''
+// 지금 DOM 에 그려진 항목 줄들. { id, check, textInput, li } 의 배열이다.
+// **항목 id 는 여기에만 있고 DOM 속성에는 심지 않는다** — Keep 의 식별자가 DOM 에
+// 드러나는 표면을 최소로 둔다(목록 창의 renderedRows 와 같은 관례다).
+let itemRows = []
 // 본문을 실제로 Keep 에서 받아왔는가. 이 값이 false 인 동안 저장 경로는 완전히
 // 닫혀 있다 — 비어 있는 본문으로 update_note 를 부르면 Keep 의 진짜 내용이
 // 통째로 지워지고, Keep 에는 노트별 버전 기록이 없어 되돌릴 방법이 없다.
@@ -26,6 +38,7 @@ let bookmarkText = ''
 
 const title = document.getElementById('title')
 const body = document.getElementById('body')
+const itemList = document.getElementById('items')
 const status = document.getElementById('status')
 const badge = document.getElementById('badge')
 const bookmark = document.getElementById('bookmark')
@@ -99,7 +112,79 @@ function showSaveFailure (unsavedTitle, unsavedText) {
  * 버그가 바로 그것이다.
  */
 function currentBookmarkText () {
-  return deriveBookmarkText(title.value, body.value)
+  // 체크리스트에는 본문 textarea 가 없다. 제목이 비었을 때 책갈피에 보여줄
+  // "본문"은 항목 글자를 이어 붙인 것이다 — 그러면 deriveBookmarkText 의 규칙
+  // (제목이 없으면 본문 첫 줄)이 그대로 "첫 항목"이 된다.
+  return deriveBookmarkText(title.value, isChecklist ? checklistText(currentItems()) : body.value)
+}
+
+// --- 체크리스트 ------------------------------------------------------------
+
+/**
+ * 지금 화면의 항목들을 사이드카가 받는 모양([{ id, text, checked }])으로 읽는다.
+ * 저장할 때도, 미저장 편집을 판단할 때도, 책갈피 문구를 뽑을 때도 여기서 온다 —
+ * text 노트에서 body.value 하나가 하던 역할이다.
+ */
+function currentItems () {
+  return itemRows.map((row) => ({
+    id: row.id,
+    text: row.textInput.value,
+    checked: row.check.checked
+  }))
+}
+
+/**
+ * 항목 줄들을 다시 그린다.
+ *
+ * 항목 글자는 Keep 에서 온 외부 데이터다. innerHTML 은 쓰지 않는다 —
+ * createElement 로 만들고 값은 .value 로만 넣는다(책갈피의 renderBookmark 가
+ * textContent 만 쓰는 것과 같은 이유다).
+ *
+ * 편집 잠금은 지금의 loaded 를 그대로 따른다. 불러오기가 끝나기 전에 그려지는
+ * 경우(충돌 응답으로 다시 그리는 경우는 이미 loaded 다)에도 잠긴 채로 서고,
+ * setEditingEnabled() 가 뒤이어 한꺼번에 연다.
+ */
+function renderChecklist (list) {
+  itemRows = []
+  itemList.textContent = ''
+  for (const item of Array.isArray(list) ? list : []) {
+    const li = document.createElement('li')
+
+    const check = document.createElement('input')
+    check.type = 'checkbox'
+    check.checked = item.checked === true
+    check.disabled = !loaded
+
+    const textInput = document.createElement('input')
+    textInput.type = 'text'
+    textInput.value = typeof item.text === 'string' ? item.text : ''
+    textInput.spellcheck = false
+    textInput.readOnly = !loaded
+
+    const paintChecked = () => li.classList.toggle('checked', check.checked)
+    paintChecked()
+
+    // **체크 토글도 글자 편집도 같은 onEdit 을 지난다.** 그래서 같은 디바운스
+    // 타이머 하나를 다시 걸 뿐이고, 연달아 여러 개를 체크해도 네트워크 요청은
+    // 마지막 한 번으로 접힌다 — 본문 타이핑과 정확히 같은 방식이다.
+    check.addEventListener('change', () => { paintChecked(); onEdit() })
+    textInput.addEventListener('input', onEdit)
+
+    li.append(check, textInput)
+    itemList.append(li)
+    itemRows.push({ id: item.id, check, textInput, li })
+  }
+}
+
+/**
+ * 미저장 편집이 있는가. ✕ / 접기 / 색 변경 / 마지막 flush 요청이 전부 이 하나를
+ * 본다 — 두 종류의 메모에 대해 판단이 두 벌로 갈리면 한쪽만 고쳐지는 날이 온다.
+ */
+function hasUnsavedEdits () {
+  if (title.value !== savedTitle) return true
+  return isChecklist
+    ? checklistSignature(currentItems()) !== savedItemsSig
+    : body.value !== savedText
 }
 
 /**
@@ -195,7 +280,7 @@ async function selectColor (name) {
   markCurrentColor()
 
   clearTimeout(timer)
-  if (title.value !== savedTitle || body.value !== savedText) {
+  if (hasUnsavedEdits()) {
     await flush()
   }
 
@@ -312,14 +397,56 @@ function showLoadFailure (message) {
   status.textContent = '불러오기 실패'
 }
 
+/**
+ * 체크리스트의 저장. 아래 flush() 의 체크리스트 갈래이고, 모양은 그쪽과 같다:
+ * 실패하면 배지로 알리고(편집본은 main 이 conflictBackup 에 보관한다), 충돌이면
+ * 서버가 이긴 내용을 화면에 반영한다.
+ *
+ * 제목과 항목을 **한 번의 요청**으로 같이 보낸다. 두 번으로 쪼개면 둘의 도착
+ * 순서가 보장되지 않고, 하나만 성공하는 반쯤 저장된 상태가 생긴다.
+ */
+async function flushChecklist (attemptTitle) {
+  const attemptItems = currentItems()
+  const res = await window.keepSticky.updateChecklist(noteId, {
+    title: attemptTitle, items: attemptItems
+  })
+  if (!res.ok) {
+    // 배지 툴팁에는 사람이 읽을 요약을 넣는다. 되돌리기용 데이터가 아니다 —
+    // 진짜 보관본은 main 이 state.json 의 conflictBackup 에 { title, items } 로
+    // 넣어 두었고, 그쪽에는 항목마다 id/text/checked 가 전부 남아 있다.
+    showSaveFailure(attemptTitle, checklistText(attemptItems))
+    status.textContent = res.code === 'AUTH_REQUIRED' ? '재로그인 필요' : '저장 실패 — 편집본 보관됨'
+    return
+  }
+  if (res.conflict) {
+    showConflict(attemptTitle, checklistText(attemptItems))
+    title.value = res.note.title || '' // 서버가 이긴 내용을 보여준다
+    renderChecklist(res.note.items)
+    savedTitle = title.value
+    savedItemsSig = checklistSignature(currentItems())
+    bookmarkText = currentBookmarkText()
+  } else {
+    badge.classList.remove('show')
+    savedTitle = attemptTitle
+    savedItemsSig = checklistSignature(attemptItems)
+  }
+  status.textContent = '저장됨'
+}
+
 async function flush () {
   // 불러오지 못한(또는 아직 못 불러온) 본문으로는 절대 저장하지 않는다.
   // 이 한 줄이 "빈 포스트잇에 한 글자 → Keep 메모 전체가 그 한 글자로 교체"
-  // 를 막는 마지막 방어선이다.
+  // 를 막는 마지막 방어선이다. 체크리스트에서도 똑같이 필요하다 — 항목을 하나도
+  // 못 받은 채로 빈 묶음을 보내면 그것이 곧 "전부 지우기"다.
   if (!loaded) return
   // title/text 는 각자의 입력칸에서 그대로 온다 — 합치거나 쪼갤 필요가 없다.
   // 두 필드는 이미 Keep 이 저장할 두 필드 그 자체다.
   const attemptTitle = title.value
+  if (isChecklist) {
+    status.textContent = '저장 중'
+    await flushChecklist(attemptTitle)
+    return
+  }
   const attemptText = body.value
   status.textContent = '저장 중'
   const res = await window.keepSticky.updateNote(noteId, { title: attemptTitle, text: attemptText })
@@ -379,7 +506,9 @@ document.getElementById('close').addEventListener('click', async () => {
   // "타이머가 걸려 있었는가"는 미저장 편집의 정확한 신호가 아니다 (우클릭 →
   // 취소 경로는 타이머 없이도 미저장 편집을 남긴다). 실제로 서버에 반영된
   // 마지막 제목/본문과 다른지로 판단한다 — 둘 중 하나만 바뀌어도 미저장이다.
-  if (title.value !== savedTitle || body.value !== savedText) {
+  // (체크리스트에서는 '본문' 자리에 항목 묶음의 서명이 들어간다. 판단은
+  // hasUnsavedEdits 한 곳에만 있다.)
+  if (hasUnsavedEdits()) {
     // flush() 는 실패해도 거절하지 않는다 — 실패하면 conflictBackup 에 이미
     // 보관한 뒤 돌아오므로, 성공 여부와 무관하게 닫아도 편집을 잃지 않는다.
     // 여기서 닫기를 막으면 사용자가 닫을 수 없는 창에 갇히므로 막지 않는다.
@@ -393,7 +522,7 @@ document.getElementById('fold').addEventListener('click', async () => {
   // 사라진다 — 여기서 먼저 저장하지 않으면 디바운스 대기 중이던 편집이
   // 조용히 사라진다. 타이머부터 끊어 뒤늦은 두 번째 저장을 막는다.
   clearTimeout(timer)
-  if (loaded && (title.value !== savedTitle || body.value !== savedText)) {
+  if (loaded && hasUnsavedEdits()) {
     // flush() 는 실패해도 거절하지 않는다. 실패분은 main 이 conflictBackup 에
     // 보관하고 배지를 띄운다 — 배지는 DOM 에 그대로 남아 펼치면 다시 보인다.
     await flush()
@@ -449,14 +578,67 @@ window.keepSticky.onFontSettings((settings) => {
   showNoteFontInputs()
 })
 
-/** 편집과 색 변경(= update_note 로 나가는 모든 것)을 한꺼번에 잠그거나 연다. */
+/** 편집과 색 변경(= Keep 으로 나가는 모든 것)을 한꺼번에 잠그거나 연다. */
 function setEditingEnabled (enabled) {
   loaded = enabled
   title.readOnly = !enabled
   body.readOnly = !enabled
+  // 체크리스트의 줄들도 같이 잠근다. 여기를 빼먹으면 불러오지 못한 창에서
+  // 체크를 눌러 빈 묶음이 저장되는 길이 열린다 — 그것이 곧 항목 전부 지우기다.
+  // (체크상자는 readOnly 를 지원하지 않으므로 disabled 를 쓴다.)
+  for (const row of itemRows) {
+    row.check.disabled = !enabled
+    row.textInput.readOnly = !enabled
+  }
   setSwatchesEnabled(enabled)
   deleteButton.disabled = !enabled
 }
+
+// --- 본문의 URL 을 Ctrl+클릭으로 열기 ---------------------------------------
+
+// 열지 못한 이유를 사람이 읽을 문구로 옮긴다. **아무 일도 일어나지 않는 것이
+// 제일 나쁘다** — 사용자는 기능이 고장 났다고 읽는다. 거절도 결과이므로 알린다.
+const URL_REFUSAL_MESSAGE = {
+  EMPTY: '여기에는 주소가 없습니다',
+  NOT_A_STRING: '여기에는 주소가 없습니다',
+  UNPARSABLE: '주소로 읽을 수 없습니다',
+  HAS_WHITESPACE: '주소로 읽을 수 없습니다',
+  BLOCKED_PROTOCOL: 'http / https 주소만 열 수 있습니다'
+}
+
+/**
+ * 캐럿이 놓인 자리의 주소를 기본 브라우저로 연다.
+ *
+ * 여기서 하는 검사는 **안내를 위한 것**이다. 진짜 검증은 main 프로세스의
+ * shell:openExternal 핸들러가 같은 sanitizeUrl 로 다시 한다 — 렌더러는 신뢰
+ * 경계의 바깥쪽이라 이쪽 검사만으로는 검사가 아니다.
+ */
+async function openUrlAtCaret () {
+  const found = urlAtCaret(body.value, body.selectionStart)
+  if (!found.ok) {
+    status.textContent = URL_REFUSAL_MESSAGE[found.reason] || '열 수 있는 주소가 아닙니다'
+    return
+  }
+  status.textContent = '브라우저에서 여는 중'
+  const res = await window.keepSticky.openExternal(found.url)
+  // main 이 거절할 수도 있다(렌더러를 통과했더라도). 그때도 조용히 끝내지 않는다.
+  status.textContent = res && res.ok
+    ? '브라우저에서 열었습니다'
+    : (URL_REFUSAL_MESSAGE[res && res.code] || '주소를 열지 못했습니다')
+}
+
+// textarea 에는 링크 요소가 없으므로 누를 대상도, 꾸밀 것도 없다. 대신 클릭이
+// 캐럿을 옮긴다는 사실을 쓴다 — click 이 오는 시점에는 selectionStart 가 이미
+// 눌린 자리로 옮겨져 있다. preventDefault 는 부르지 않는다: 캐럿 이동은 이미
+// 끝났고, 여기서 기본 동작을 막아 봐야 얻을 것이 없다.
+//
+// 평범한 클릭이 아니라 Ctrl+클릭인 이유가 이것이다. 평범한 클릭은 여전히 글자
+// 사이에 커서를 놓는 본래의 일을 해야 한다. (macOS 를 위해 metaKey 도 같이
+// 받는다 — 이 앱은 지금 Windows 전용이지만 한 줄로 끝나는 배려다.)
+body.addEventListener('click', (e) => {
+  if (!e.ctrlKey && !e.metaKey) return
+  openUrlAtCaret()
+})
 
 /**
  * 이 메모를 Keep 휴지통으로 보내고(성공하면 main 이 창을 닫는다) 목록 창까지
@@ -528,7 +710,7 @@ document.addEventListener('contextmenu', (e) => {
 window.keepSticky.onFlushRequest(async () => {
   clearTimeout(timer)
   try {
-    if (loaded && (title.value !== savedTitle || body.value !== savedText)) await flush()
+    if (loaded && hasUnsavedEdits()) await flush()
   } finally {
     window.keepSticky.flushDone()
   }
@@ -557,9 +739,24 @@ window.keepSticky.noteId().then(async (id) => {
   // Keep 의 title/text 를 각 입력칸에 그대로 옮긴다 — 합치지 않는다. 왕복이
   // 걱정될 이유가 없다: 저장도 이 두 필드를 그대로 되돌려 보낼 뿐이다.
   title.value = note.title || ''
-  body.value = note.text || ''
   savedTitle = title.value
-  savedText = body.value
+
+  // 제목 칸은 두 종류 모두에 있다. 갈라지는 것은 그 아래다.
+  //
+  // kind 는 사이드카가 실어 준다("note" 또는 "list"). 이 값은 창의 수명 동안
+  // 바뀌지 않는다 — Keep 의 노트는 Note 이거나 List 이고 둘 사이에 변환 경로가
+  // 없기 때문이다(gkeepapi 의 type 에는 setter 도 convert* 도 없다). 그래서
+  // 여기서 한 번 정하고 나면 종류를 다시 확인할 자리가 없다.
+  isChecklist = note.kind === 'list'
+  body.hidden = isChecklist
+  itemList.hidden = !isChecklist
+  if (isChecklist) {
+    renderChecklist(note.items)
+    savedItemsSig = checklistSignature(currentItems())
+  } else {
+    body.value = note.text || ''
+    savedText = body.value
+  }
   // Keep 의 색 이름을 그대로 속성 값으로 심는다 (innerHTML 경로가 아니다).
   // note.html 에 없는 이름이면 어느 규칙에도 안 걸려 기본 노란색이 남는다.
   if (note.color) document.body.dataset.color = note.color
