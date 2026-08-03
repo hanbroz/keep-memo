@@ -16,6 +16,7 @@ const { reconcileSelection } = require('./selection-reconcile')
 const { validateNotePatch } = require('./note-patch')
 const { trayMenuTemplate, TRAY_TOOLTIP } = require('./tray-menu')
 const { TRAY_ICON_DATA_URL } = require('./tray-icon')
+const { extractIncomingVersion, describeVersionMismatch } = require('./version-notice')
 
 // --- 다중 실행 방지 -------------------------------------------------------
 //
@@ -43,19 +44,46 @@ const { TRAY_ICON_DATA_URL } = require('./tray-icon')
 // Node 가 함수로 감싸 실행하므로 최상위 return 이 유효한 문법이다.) 이 순서는
 // Electron 공식 문서가 app.requestSingleInstanceLock() 예제로 보여주는 것과
 // 같다.
-const gotSingleInstanceLock = app.requestSingleInstanceLock()
+// additionalData 로 이 인스턴스의 버전을 함께 건다. app.getVersion() 은
+// package.json 의 version(빌드마다 scripts/build.js 가 --config.extraMetadata.
+// version 으로 "yyyy.MMdd.HHmm" 값을 심는다)을 읽을 뿐이라 whenReady() 이전
+// 시점(지금 여기)에도 안전하다 — Electron 공식 타입 선언(electron.d.ts)에서도
+// getSystemLocale() 같은 다른 메서드에는 "이 API 는 ready 이후에만 호출 가능"
+// 이라는 주석이 붙어 있는데 getVersion() 에는 그런 제약이 없다.
+const gotSingleInstanceLock = app.requestSingleInstanceLock({ version: app.getVersion() })
 if (!gotSingleInstanceLock) {
   app.quit()
   return
 }
 
 // 두 번째 인스턴스를 실행하려는 시도가 있으면(=방금 위에서 잠금에 실패한
-// 프로세스가 있으면) 이 인스턴스로 알림이 온다. openOrFocusList() 는 트레이
-// 클릭과 같은 진입점이다 — "앱을 또 실행했다"도 "트레이를 눌렀다"도 결국
-// "보여 달라"는 같은 요청이고, 시작이 아직 끝나지 않은 동안(설정/로그인
-// 창이 떠 있는 동안)의 폴백까지 이미 그 함수가 처리한다.
-app.on('second-instance', () => {
-  openOrFocusList()
+// 프로세스가 있으면) 이 인스턴스로 알림이 온다.
+//
+// 잠금은 appId 로 걸리고 appId 는 빌드마다 바뀌지 않는다 — 바뀌는 것은
+// app.getVersion() 뿐이다. 그래서 사용자가 새로 빌드한 exe 를 실행해도, 그보다
+// 오래된 인스턴스가 아직 떠 있으면 잠금은 여전히 그 오래된 인스턴스가 쥐고
+// 있다: 방금 실행한 새 빌드는 여기(둘째 인자 없이 예전처럼 openOrFocusList()
+// 만 불렀다면) 조용히 죽고, 오래된 인스턴스는 자기 창을 앞으로 가져올 뿐이다.
+// 사용자 눈에는 "새로 빌드했는데 그대로다"로 보이지만 실제로는 새 빌드가 뜬
+// 적조차 없다 — 이 블록이 고치는 증상이다.
+//
+// 그래서 버전이 같을 때만 조용히 넘어간다(예전과 같은 동작: 트레이 클릭과
+// 같은 "보여 달라" 요청으로 보고 openOrFocusList() 하나로 끝낸다 — 시작이
+// 아직 끝나지 않은 동안의 폴백도 이미 그 함수 안에 있다). 버전이 다르면(또는
+// 상대가 이 기능이 없는 옛 빌드라 버전을 아예 안 보내면) 조용히 넘어가는 대신
+// 지금 실행 중인 이 인스턴스가 그 사실을 다이얼로그로 알린다.
+//
+// "같은가/다른가"와 "다르면 뭐라고 보여줄 것인가"의 판단 자체는 Electron 없이
+// 테스트 가능한 순수 함수(version-notice.js)에 있다. 여기서는 additionalData
+// 를 건네고 결과에 따라 분기만 한다.
+app.on('second-instance', (_event, _argv, _workingDirectory, additionalData) => {
+  const incomingVersion = extractIncomingVersion(additionalData)
+  const result = describeVersionMismatch(app.getVersion(), incomingVersion)
+  if (result.matches) {
+    openOrFocusList()
+    return
+  }
+  showVersionMismatchDialog(result)
 })
 
 const PRELOAD = path.join(__dirname, 'preload.js')
@@ -286,6 +314,51 @@ function openOrFocusList () {
     return
   }
   createListWindow()
+}
+
+/**
+ * 두 번째 인스턴스가 실행됐는데 버전이 다를 때(또는 상대 버전을 모를 때) 뜨는
+ * 다이얼로그. 무엇을 보여줄지(message/detail)는 version-notice.js 의 순수
+ * 함수가 이미 정해서 넘겨준다 — 여기서는 그것을 그대로 띄우고 사용자의 선택에
+ * 따른 동작만 담당한다.
+ *
+ * 특정 창에 매달지 않는다 — dialog.showMessageBox 에 BrowserWindow 를 넘기지
+ * 않는다. listWindow 는 사용자가 이미 닫아뒀을 수 있고(트레이에만 남아 있는
+ * 상태), 창에 매단 다이얼로그는 그 창이 안 보이면 같이 안 보이게 된다. Electron
+ * 문서(showMessageBoxSync 설명): 창을 안 주거나 준 창이 안 보이면 "독립 창으로
+ * 뜬다" — 이 다이얼로그가 바로 그래야 한다. 여기에 더해 app.focus({ steal:
+ * true }) 로 이 앱을 최상단으로 끌어와, 사용자가 다른 앱을 보고 있던 중이었어도
+ * 다이얼로그가 뜨자마자 눈에 들어오게 한다. second-instance 는 ready 이후에만
+ * 발생함이 보장되므로(Electron 문서) 이 시점에 app.focus/dialog 를 쓰는 것은
+ * 항상 안전하다.
+ *
+ * @param {{ message: string, detail: string }} notice - describeVersionMismatch() 의 결과(matches: false 인 경우)
+ */
+function showVersionMismatchDialog ({ message, detail }) {
+  app.focus({ steal: true })
+  dialog.showMessageBox({
+    type: 'warning',
+    title: 'Keep Sticky 버전이 다릅니다',
+    message,
+    detail,
+    buttons: ['실행 중인 것 종료하기', '취소'],
+    // Enter(defaultId)나 Esc(cancelId)를 무심코 눌렀을 때 실행 중이던 것이
+    // 종료되면 안 된다 — 둘 다 안전한 쪽인 [취소](인덱스 1)를 가리킨다.
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true
+  }).then((result) => {
+    // 트레이 [종료]와 똑같은 경로: app.quit() 뿐이다. before-quit 의
+    // flushAllNotes() → stopSidecar() → app.quit() 재진입이 그대로 실행되므로,
+    // 지금 열려 있는 포스트잇의 미저장 편집도 이 경로를 거쳐 저장된다. 사용자가
+    // 다시 실행하는 것은 이 함수의 책임이 아니다 — 지시문대로 "종료만" 한다.
+    if (result.response === 0) app.quit()
+  }).catch((err) => {
+    // showMessageBox 가 거절되는 경우는 문서화돼 있지 않지만, 혹시라도 거절되면
+    // 조용히 삼킨다 — 여기서 예외가 새어나가 앱을 죽이는 것보다 "사용자가 응답
+    // 하지 않은 것"과 같은 결과(아무 일도 안 일어남)가 더 안전하다.
+    console.warn(`버전 불일치 다이얼로그 처리 중 오류: ${err.message}`)
+  })
 }
 
 /**
