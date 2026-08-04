@@ -429,6 +429,21 @@ def handle(service: KeepService, line: str) -> dict:
         return {"id": rid, "result": getattr(service, method)(**params)}
     except AuthRequired as exc:
         return {"id": rid, "error": {"code": "AUTH_REQUIRED", "message": str(exc)}}
+    except gkeepapi.exception.LoginException as exc:
+        # **이미 인증된 세션이 도중에 거절당한 경우다.** _require_keep 의
+        # AuthRequired 그물은 최초 authenticate() 하나만 감싼다 — 그 뒤에 구글이
+        # 자격증명을 거절하면(예: [동기화] 안에서 일어나는 토큰 갱신) 여기까지
+        # 내려와 맨 아래 except 의 INTERNAL 이 됐다. 그러면 렌더러는 재로그인이
+        # 필요한 상황임을 알 수 없어, 사용자에게 "LoginException:
+        # BadAuthentication" 같은 파이썬 예외 문자열을 그대로 보여줬다.
+        #
+        # 특정 메서드가 아니라 여기서 잡는 것이 요점이다: Keep 을 건드리는
+        # 모든 RPC 가 같은 이유로 같은 예외를 만날 수 있고, 그때마다 각자
+        # 감싸게 하면 언젠가 하나를 빠뜨린다.
+        #
+        # BrowserLoginRequiredException 도 이 클래스의 하위라 함께 걸린다.
+        return {"id": rid,
+                "error": {"code": "AUTH_REQUIRED", "message": f"{type(exc).__name__}: {exc}"}}
     except NotFound as exc:
         return {"id": rid, "error": {"code": "NOT_FOUND", "message": str(exc)}}
     except BadRequest as exc:

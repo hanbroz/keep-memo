@@ -179,10 +179,29 @@ async function syncNotes () {
   syncEl.disabled = true
   statusEl.textContent = '동기화하는 중…'
   try {
-    const res = await window.keepSticky.syncNotes()
+    let res = await window.keepSticky.syncNotes()
+
+    // 자격증명이 무효가 됐다. 예전에는 '재로그인이 필요합니다'라고 **말만** 했고,
+    // 실제로 다시 로그인하는 통로는 최초 실행 경로 하나뿐이라 사용자는 여기서
+    // 막혔다(재시작해도 auth_status 가 토큰의 존재만 보므로 로그인 창이 뜨지
+    // 않는다). 사용자가 방금 [동기화] 를 눌렀으니 로그인 창을 띄우는 것이 그
+    // 요청의 자연스러운 이어짐이다 — 묻지 않고 연다.
+    if (!res.ok && res.code === 'AUTH_REQUIRED') {
+      statusEl.textContent = '재로그인이 필요합니다. 로그인 창을 엽니다…'
+      const login = await window.keepSticky.relogin()
+      if (!login.ok) {
+        statusEl.textContent = `다시 로그인하지 못했습니다: ${login.message}`
+        return
+      }
+      // 새 자격증명으로 한 번만 다시 시도한다. 여기서 또 인증에 걸리면 되풀이
+      // 하지 않는다 — 로그인 창을 무한히 띄우느니 사실대로 알리는 편이 낫다.
+      statusEl.textContent = '다시 로그인했습니다. 동기화하는 중…'
+      res = await window.keepSticky.syncNotes()
+    }
+
     if (!res.ok) {
       statusEl.textContent = res.code === 'AUTH_REQUIRED'
-        ? '재로그인이 필요합니다'
+        ? '재로그인했지만 여전히 인증에 실패합니다.'
         : `동기화하지 못했습니다: ${res.message}`
       return
     }

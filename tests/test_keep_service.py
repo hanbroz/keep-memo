@@ -868,3 +868,46 @@ def test_unarchiving_returns_it_to_the_created_order(account):
 
     ids = [n["id"] for n in _call(account, "list_notes")["result"]["notes"]]
     assert ids == [new["id"], old["id"]]
+
+
+# --- 인증 실패 분류 -----------------------------------------------------------
+#
+# 사용자가 실제로 겪은 증상: [동기화] 를 눌렀더니 상태 줄에 "동기화하지
+# 못했습니다: LoginException: BadAuthentication" 이라는 파이썬 예외 문자열이
+# 그대로 찍혔다. 인증이 만료된 것인데 렌더러는 그것을 알 수 없어 재로그인
+# 안내도, 재로그인 통로도 뜨지 않았다.
+
+
+def test_login_failure_during_sync_is_auth_required(account):
+    """**이 테스트가 그 버그를 고정한다.**
+
+    AuthRequired 그물은 _require_keep 의 최초 authenticate() 하나만 감싼다.
+    이미 인증된 세션이 도중에 거절당하면(토큰 갱신 실패) 그 예외는 그물 밖으로
+    나가 맨 아래 except 의 INTERNAL 이 됐다. 렌더러는 code 로만 분기하므로
+    INTERNAL 로는 재로그인이 필요한 상황임을 알 수 없다.
+    """
+    _call(account, "create_note", title="t", text="본문")
+    account._keep.sync_error = ks.gkeepapi.exception.LoginException("BadAuthentication")
+
+    res = _call(account, "sync_notes")
+    assert res["error"]["code"] == "AUTH_REQUIRED"
+    assert "BadAuthentication" in res["error"]["message"]
+
+
+def test_browser_login_required_is_also_auth_required(account):
+    """BrowserLoginRequiredException 은 LoginException 의 하위라 같이 걸린다."""
+    _call(account, "create_note", title="t", text="본문")
+    account._keep.sync_error = ks.gkeepapi.exception.BrowserLoginRequiredException("need browser")
+
+    assert _call(account, "sync_notes")["error"]["code"] == "AUTH_REQUIRED"
+
+
+def test_non_auth_sync_failure_is_still_internal(account):
+    """인증과 무관한 실패까지 AUTH_REQUIRED 로 뭉뚱그리면 안 된다 — 그러면
+    네트워크가 끊겼을 뿐인데 로그인 창이 뜬다."""
+    _call(account, "create_note", title="t", text="본문")
+    account._keep.sync_error = RuntimeError("network unreachable")
+
+    res = _call(account, "sync_notes")
+    assert res["error"]["code"] == "INTERNAL"
+    assert "network unreachable" in res["error"]["message"]

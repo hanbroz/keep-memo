@@ -300,17 +300,51 @@ function flushAllNotes () {
   return Promise.all([...noteWindows.values()].map((win) => requestFlush(win)))
 }
 
+/**
+ * 구글 로그인 창을 띄워 새 master token 을 받아 keyring 에 넣는다.
+ *
+ * **먼저 persist:login 파티션을 비우는 것이 핵심이다.** pollCookie 는 그 세션에
+ * 남아 있는 oauth_token 쿠키를 그대로 집어 오는데, 그 값은 1회용이고 약 60초
+ * 만에 만료된다(login.js 의 주석). 지난 로그인이 남긴 쿠키가 있으면 창이 뜨자마자
+ * 이미 써 버린 그 토큰이 잡혀 exchange_cookie 가 실패한다 — 사용자에게는 "로그인
+ * 창이 떴다가 그냥 실패하는" 것으로 보이고, 몇 번을 다시 눌러도 같다. 재로그인이
+ * 생기면서 처음으로 문제가 되는 지점이라 여기 한 곳에서 지우고 시작한다.
+ *
+ * @returns {Promise<boolean>} 새 토큰을 받아 저장했는가.
+ */
+async function doLogin () {
+  const loginSession = session.fromPartition('persist:login')
+  await loginSession.clearStorageData()
+  const win = createLoginWindow(BrowserWindow)
+  try {
+    const token = await pollCookie(loginSession, { intervalMs: 1000, timeoutMs: 300000 })
+    if (!token) return false
+    await sidecar.call('exchange_cookie', { email: accountEmail, oauth_token: token })
+    return true
+  } finally {
+    // 어떤 경로로 끝나든 로그인 창은 닫는다. 사용자가 이미 ✕ 로 닫았을 수 있다.
+    if (!win.isDestroyed()) win.close()
+  }
+}
+
+// 로그인 창이 이미 떠 있는가. 재로그인은 트레이 메뉴와 [동기화] 실패 두 곳에서
+// 들어오므로, 두 번째 요청이 창을 하나 더 띄우지 않게 막는다. 창이 두 장이면
+// 둘 다 같은 쿠키를 노려 하나는 반드시 죽은 토큰을 집는다.
+let loginInFlight = null
+
+function runLoginFlow () {
+  if (loginInFlight) return loginInFlight
+  loginInFlight = doLogin().finally(() => { loginInFlight = null })
+  return loginInFlight
+}
+
 async function ensureAuth () {
   const { authenticated } = await sidecar.call('auth_status', { email: accountEmail })
+  // auth_status 는 토큰이 **있는지**만 본다(유효한지는 네트워크를 타야 안다).
+  // 그래서 저장된 토큰이 구글에서 무효가 된 경우는 여기서 걸러지지 않고, 첫
+  // Keep 호출이 AUTH_REQUIRED 로 떨어진다 — 그때의 통로가 notes:relogin 이다.
   if (authenticated) return true
-
-  const win = createLoginWindow(BrowserWindow)
-  const token = await pollCookie(session.fromPartition('persist:login'),
-                                 { intervalMs: 1000, timeoutMs: 300000 })
-  win.close()
-  if (!token) return false
-  await sidecar.call('exchange_cookie', { email: accountEmail, oauth_token: token })
-  return true
+  return runLoginFlow()
 }
 
 /**
@@ -474,6 +508,9 @@ function createTray () {
   t.setToolTip(TRAY_TOOLTIP)
   t.setContextMenu(Menu.buildFromTemplate(trayMenuTemplate({
     onOpenList: openOrFocusList,
+    // 자격증명이 무효가 되면 목록 창의 [동기화]도 실패한다. 그 창을 닫아 둔
+    // 사용자에게는 여기가 유일한 통로다. 실패해도 트레이를 죽이지 않는다.
+    onRelogin: () => { runLoginFlow().catch(() => {}) },
     // 트레이의 [종료]도 반드시 app.quit() 을 거친다. 미저장 편집 flush 와
     // 사이드카 정리는 전부 before-quit / will-quit 에 있고, 그 경로를
     // 건너뛰면 편집이 소리 없이 사라지고 파이썬 자식이 살아남는다.
@@ -1160,6 +1197,25 @@ app.whenReady().then(async () => {
   // 만든 주소도 예외 없이 openChecked 를 지난다. 우리가 만든 문자열이라고
   // 검증을 건너뛰기 시작하면, 다음 사람이 그 자리에 변수를 넣는다.
   ipcMain.handle('keep:open', () => openChecked(keepListUrl(accountEmail)))
+
+  // 재로그인. 저장된 master token 이 구글에서 무효가 되면(비밀번호 변경, 기기
+  // 접근 해지 등) 이 앱은 스스로 빠져나올 길이 없었다 — auth_status 가 토큰의
+  // **존재**만 보므로 재시작해도 로그인 창이 뜨지 않고, 렌더러들은 '재로그인
+  // 필요'라고 말만 할 뿐 실제로 다시 로그인시키는 통로가 최초 실행 경로 하나
+  // 뿐이었다. 그 통로를 런타임에도 연다.
+  //
+  // 새 토큰은 exchange_cookie 가 keyring 에 덮어쓰고 사이드카의 _keep 을 비우므로,
+  // 다음 호출부터 새 자격증명으로 다시 인증된다. 여기서 따로 지울 것이 없다.
+  ipcMain.handle('auth:relogin', async () => {
+    try {
+      const ok = await runLoginFlow()
+      return ok
+        ? { ok: true }
+        : { ok: false, message: '로그인을 마치지 못했습니다. 창을 닫았거나 시간이 지났습니다.' }
+    } catch (err) {
+      return { ok: false, message: err.message, code: err.code }
+    }
+  })
 
   // 지우기의 유일한 경로. 사이드카의 trash_note 는 node.trash() 를 부른다 —
   // Keep 휴지통으로 보내는 것이고 7일간 복구할 수 있다. node.delete()(영구

@@ -4,22 +4,30 @@ const assert = require('node:assert')
 const { trayMenuTemplate, TRAY_TOOLTIP } = require('../tray-menu')
 
 const noop = () => {}
-const build = (over = {}) => trayMenuTemplate({ onOpenList: noop, onQuit: noop, ...over })
+const build = (over = {}) =>
+  trayMenuTemplate({ onOpenList: noop, onRelogin: noop, onQuit: noop, ...over })
 
-test('메뉴에 목록 열기와 종료가 모두 있다', () => {
+test('메뉴에 목록 열기와 다시 로그인과 종료가 모두 있다', () => {
   const labels = build().filter((i) => i.label).map((i) => i.label)
-  assert.deepStrictEqual(labels, ['메모 목록 열기', '종료'])
+  assert.deepStrictEqual(labels, ['메모 목록 열기', '다시 로그인', '종료'])
 })
 
 test('각 항목이 넘겨준 핸들러에 연결된다', () => {
   let opened = 0
   let quit = 0
-  const items = trayMenuTemplate({ onOpenList: () => opened++, onQuit: () => quit++ })
+  let relogin = 0
+  const items = trayMenuTemplate({
+    onOpenList: () => opened++, onRelogin: () => relogin++, onQuit: () => quit++
+  })
   const byLabel = (label) => items.find((i) => i.label === label)
 
   byLabel('메모 목록 열기').click()
   assert.strictEqual(opened, 1)
   assert.strictEqual(quit, 0, '목록을 여는 것이 앱을 끝내면 안 된다')
+
+  byLabel('다시 로그인').click()
+  assert.strictEqual(relogin, 1)
+  assert.strictEqual(quit, 0, '다시 로그인이 앱을 끝내면 안 된다')
 
   byLabel('종료').click()
   assert.strictEqual(quit, 1)
@@ -37,7 +45,10 @@ test('메뉴에 삭제/휴지통 경로는 존재하지 않는다', () => {
 test('핸들러가 빠지면 조용히 죽은 메뉴를 만들지 않고 던진다', () => {
   assert.throws(() => trayMenuTemplate({ onQuit: noop }), TypeError)
   assert.throws(() => trayMenuTemplate({ onOpenList: noop }), TypeError)
-  assert.throws(() => trayMenuTemplate({ onOpenList: noop, onQuit: 'app.quit()' }), TypeError)
+  assert.throws(() => trayMenuTemplate({ onOpenList: noop, onQuit: noop }), TypeError,
+    'onRelogin 이 빠져도 던져야 한다')
+  assert.throws(() => trayMenuTemplate({ onOpenList: noop, onRelogin: noop, onQuit: 'app.quit()' }),
+    TypeError)
 })
 
 test('종료는 항상 마지막이고 구분선 뒤에 있다', () => {

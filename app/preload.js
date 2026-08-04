@@ -59,6 +59,10 @@ contextBridge.exposeInMainWorld('keepSticky', {
   // 경로가 있으므로 창이 뜬 직후에도 한 번 온다. 이벤트 객체는 넘기지 않는다.
   onFoldState: (cb) => ipcRenderer.on('notes:foldState', (_e, folded) => cb(!!folded)),
   exchangeCookie: (token) => ipcRenderer.invoke('auth:exchange', token),
+  // 저장된 자격증명이 구글에서 무효가 됐을 때 다시 로그인한다. 로그인 창을
+  // 띄우고 새 토큰을 keyring 에 넣는 일은 전부 main 이 한다 — 렌더러는 토큰을
+  // 보지도, 만지지도 않는다. 트레이 메뉴의 [다시 로그인] 과 같은 함수로 간다.
+  relogin: () => ipcRenderer.invoke('auth:relogin'),
   noteId: () => ipcRenderer.invoke('notes:currentId'),
   // 최초 실행 설정 창(setup-email.html) 전용. 입력값을 검증/저장하는 것은
   // 항상 main 프로세스다 — 렌더러는 결과 메시지를 보여주기만 한다.

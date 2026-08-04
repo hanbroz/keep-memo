@@ -17,17 +17,25 @@ const TRAY_TOOLTIP = 'Keep 메모'
  * 전부 before-quit / will-quit 핸들러에 있다. 트레이가 그 경로를 건너뛰고
  * 직접 프로세스를 끝내면 편집이 소리 없이 사라진다.
  *
- * @param {{onOpenList: Function, onQuit: Function}} actions
+ * [다시 로그인]이 여기 있는 이유: 저장된 자격증명이 구글에서 무효가 되면 목록
+ * 창의 [동기화]도 실패한다. 그 창에서만 다시 로그인할 수 있게 하면, 창을 닫아
+ * 둔 사용자는 앱을 껐다 켜도(auth_status 가 토큰의 존재만 보므로 로그인 창이
+ * 뜨지 않는다) 빠져나올 길이 없다. 트레이는 언제나 거기 있다.
+ *
+ * @param {{onOpenList: Function, onRelogin: Function, onQuit: Function}} actions
  * @returns {Array<object>} Menu.buildFromTemplate 에 그대로 넘길 배열
  */
-function trayMenuTemplate ({ onOpenList, onQuit }) {
-  if (typeof onOpenList !== 'function' || typeof onQuit !== 'function') {
+function trayMenuTemplate ({ onOpenList, onRelogin, onQuit }) {
+  if (typeof onOpenList !== 'function' || typeof onRelogin !== 'function' ||
+      typeof onQuit !== 'function') {
     // 핸들러가 빠진 메뉴는 눌러도 아무 일이 없다. 트레이가 앱에 닿는 유일한
     // 길이므로, 조용히 죽은 메뉴를 만드느니 만들 때 터지는 편이 낫다.
-    throw new TypeError('트레이 메뉴에는 onOpenList 와 onQuit 이 모두 필요하다')
+    throw new TypeError('트레이 메뉴에는 onOpenList, onRelogin, onQuit 이 모두 필요하다')
   }
   return [
     { label: '메모 목록 열기', click: onOpenList },
+    { type: 'separator' },
+    { label: '다시 로그인', click: onRelogin },
     { type: 'separator' },
     { label: '종료', click: onQuit }
   ]
