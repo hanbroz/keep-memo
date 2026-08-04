@@ -1302,8 +1302,8 @@ archiveButton.addEventListener('click', async () => {
     }
     // 사이드카가 확인해 준 값으로 다시 맞춘다(색과 같은 관례다).
     showArchiveState(res.note ? res.note.archived : next)
-    // 보관했으면 main 이 이 창을 바탕화면에서 내린다. 그 전에 문구를 남겨 두면
-    // 창이 사라지기 직전 한 박자 동안 무슨 일이 일어났는지 보인다.
+    // 창은 그대로 남는다. 눌린 압정과 마찬가지로 단추의 상태가 결과를 말해 주고,
+    // 이 문구가 그것을 한 번 더 확인해 준다. 내리고 싶으면 ✕ 가 따로 있다.
     status.textContent = next ? '보관했습니다' : '보관을 해제했습니다'
   } catch (err) {
     showArchiveState(previous)

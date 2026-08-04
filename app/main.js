@@ -1063,15 +1063,18 @@ app.whenReady().then(async () => {
       if (validated.params.color !== undefined && res.note) {
         notifyNoteColor(id, res.note.color)
       }
-      // 보관하면 바탕화면에서도 내린다. "치워 둔다"는 뜻인데 포스트잇만 그대로
-      // 떠 있으면 앞뒤가 맞지 않는다. 내리는 것은 hideNote 라 Keep 메모에는
-      // 손대지 않는다 — 해제하면 목록에서 다시 띄울 수 있다.
+      // **보관해도 포스트잇은 내리지 않는다.** 한때 여기서 hideNote(id) 를
+      // 불렀는데(보관 = 치워 두기라고 읽었다), 사용자가 [보관] 을 누르는 순간
+      // 보고 있던 메모가 눈앞에서 닫혀 버렸다. 되돌리기처럼 보이는 데다,
+      // 방금 무엇을 눌렀는지 확인할 화면조차 사라진다.
       //
-      // 해제(false)에서 자동으로 띄우지는 않는다. 보관함을 훑다가 여러 개를
-      // 해제했을 때 포스트잇이 우수수 튀어나오면 그게 더 놀랍다.
-      if (validated.params.archived === true) hideNote(id)
-      // 어느 쪽이든 목록 창은 다시 읽어야 한다. 보관 여부가 곧 그 행이 목록에
-      // 보이는지를 정하므로, 색과 달리 행 하나만 고쳐서는 맞출 수 없다.
+      // 애초에 이 앱의 상태 두 가지는 서로 독립이다: visible 은 "이 PC 의
+      // 바탕화면에 떠 있는가"(state.json), archived 는 "Keep 에서 치워 뒀는가"
+      // (Keep 노트의 필드). 색이나 압정을 바꿔도 창이 닫히지 않는 것과 같은
+      // 이유로, 보관도 창을 건드릴 이유가 없다. 내리고 싶으면 ✕ 가 있다.
+      //
+      // 목록 창은 다시 읽어야 한다 — 보관된 메모는 맨 위 묶음으로 자리를
+      // 옮기므로(_serialize_for_list), 색과 달리 행 하나만 고쳐서는 맞출 수 없다.
       if (validated.params.archived !== undefined) notifyNotesChanged()
       return { ok: true, ...res }
     } catch (err) {
