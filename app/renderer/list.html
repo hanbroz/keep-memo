@@ -61,14 +61,25 @@
       overflow-wrap: break-word;
     }
 
-    /* 검색 칸. 버튼은 없다 — 치는 대로 걸러진다. */
-    header { flex: none; padding: 10px 10px 8px; border-bottom: 1px solid var(--line); }
+    /* 검색 칸. 거르는 버튼은 없다 — 치는 대로 걸러진다. 오른쪽의 [Keep 열기] 는
+       거르기와 무관하고, 이 앱 밖(브라우저)으로 나가는 유일한 출구다. */
+    /* flex-wrap 이 필요한 이유는 아래 footer 와 같다: 창은 360px 까지 좁힐 수
+       있고 사용자가 [설정]에서 본문 크기를 24pt 까지 올릴 수 있어, 검색칸과
+       버튼이 한 줄에 다 서지 못하는 조합이 실제로 존재한다. 그때 버튼이 아랫줄로
+       내려오는 편이 검색칸이 0px 로 찌그러지는 것보다 낫다. */
+    header {
+      flex: none; display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+      padding: 10px 10px 8px; border-bottom: 1px solid var(--line);
+    }
     #search {
-      box-sizing: border-box; width: 100%;
+      /* min-width 가 0 이 아니라 실제 값인 것이 위 wrap 을 실제로 일으킨다 —
+         0 이면 줄바꿈 대신 검색칸이 한없이 줄어든다. */
+      box-sizing: border-box; flex: 1; min-width: 140px;
       font-family: inherit; font-size: var(--fs-body); line-height: 1.4;
       padding: 8px 10px; border: 1px solid #cfd4d8; border-radius: 6px;
       color: var(--ink); background: #fff;
     }
+    #open-keep { flex: none; white-space: nowrap; }
     #search:focus { outline: 2px solid #2f6feb; outline-offset: -1px; }
 
     main { flex: 1; overflow-y: auto; padding: 6px 10px 10px; }
@@ -171,6 +182,12 @@
   <header>
     <input id="search" type="search" placeholder="메모 검색" aria-label="메모 검색"
            autocomplete="off" autocorrect="off" spellcheck="false">
+    <!-- 브라우저로 keep.google.com 을 연다. 창 안에 Keep 을 띄우지 않는 것이
+         중요하다 — 이 앱의 렌더러는 구글 로그인 화면을 볼 이유가 없고, 봐서도
+         안 된다(자격 증명은 사이드카와 OS 자격증명 저장소에만 산다). 여는 일은
+         언제나 main 이 검증한 뒤 shell.openExternal 로 한다. -->
+    <button id="open-keep" type="button"
+            title="브라우저에서 Google Keep 열기 (keep.google.com)">Keep 열기</button>
   </header>
   <main>
     <ul id="list"></ul>

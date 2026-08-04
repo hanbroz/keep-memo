@@ -20,7 +20,7 @@ const { validateNotePatch, validateChecklistPatch } = require('./note-patch')
 // (즉시 안내를 띄우기 위해서다), 렌더러는 신뢰 경계의 바깥쪽이라 그쪽 검사만으로는
 // 검사가 아니다. shell.openExternal() 은 문자열을 그대로 운영체제에 넘기고, 그
 // 문자열의 출처는 Keep 이라는 외부 데이터다.
-const { sanitizeUrl } = require('./renderer/url-open')
+const { sanitizeUrl, keepListUrl } = require('./renderer/url-open')
 const { trayMenuTemplate, TRAY_TOOLTIP } = require('./tray-menu')
 const { TRAY_ICON_DATA_URL } = require('./tray-icon')
 const {
@@ -784,6 +784,30 @@ function notifyNotesChanged () {
  * 색만 보내면 되고, 목록 창은 다시 그리기만 하므로 체크가 그대로 남는다.
  * 사이드카 왕복(list_notes)이 없다는 것도 덤이다.
  */
+/**
+ * 주소를 검증하고 기본 브라우저로 넘긴다. 밖으로 나가는 **모든** 주소가 이
+ * 한 곳을 지난다 — 포스트잇 본문의 Ctrl+클릭도, 목록 창의 [Keep 열기] 도.
+ *
+ * **여기가 진짜 검증 지점이다.** 렌더러도 같은 sanitizeUrl 을 부르지만 그것은
+ * 사용자에게 즉시 안내를 띄우기 위한 것이고, 렌더러는 신뢰 경계의 바깥쪽이다 —
+ * 그쪽에만 있는 검사는 검사가 아니다. shell.openExternal() 은 받은 문자열을
+ * 그대로 운영체제에 넘기고, 그 문자열은 Keep 에서 온 외부 데이터라 무엇이든
+ * 들어 있을 수 있다. http/https 가 아니면 어떤 것도 여기를 통과하지 못한다.
+ *
+ * 넘기는 값은 부르는 쪽이 준 원문이 아니라 sanitizeUrl 이 돌려준 parsed.href 다 —
+ * 파서가 정규화하고 퍼센트 인코딩까지 마친 값이다.
+ */
+async function openChecked (raw) {
+  const checked = sanitizeUrl(raw)
+  if (!checked.ok) return { ok: false, code: checked.reason }
+  try {
+    await shell.openExternal(checked.url)
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, code: 'OPEN_FAILED', message: err.message }
+  }
+}
+
 function notifyNoteColor (id, color) {
   if (!listWindow || listWindow.isDestroyed()) return
   const wc = listWindow.webContents
@@ -1125,28 +1149,17 @@ app.whenReady().then(async () => {
     }
   })
 
-  // 본문의 URL 을 기본 브라우저로 연다 (포스트잇에서 Ctrl+클릭).
+  // 본문의 URL 을 기본 브라우저로 연다 (포스트잇에서 Ctrl+클릭). 검증과 실제
+  // 열기는 openChecked 한 곳에 있다 — 왜 그것이 진짜 경계인지도 그 함수의 주석에.
+  ipcMain.handle('shell:openExternal', (_e, raw) => openChecked(raw))
+
+  // 목록 창의 [Keep 열기]. 주소를 렌더러가 아니라 **여기서** 만드는 것이 요점이다:
+  // 계정 이메일이 필요한데, 그것 하나 때문에 렌더러에 계정을 넘기고 싶지 않다
+  // (preload 의 표면은 좁을수록 좋다). 렌더러는 "Keep 을 열어 달라"고만 말한다.
   //
-  // **여기가 진짜 검증 지점이다.** 렌더러도 같은 sanitizeUrl 을 부르지만 그것은
-  // 사용자에게 즉시 안내를 띄우기 위한 것이고, 렌더러는 신뢰 경계의 바깥쪽이다 —
-  // 그쪽에만 있는 검사는 검사가 아니다. shell.openExternal() 은 받은 문자열을
-  // 그대로 운영체제에 넘기고, 그 문자열은 Keep 에서 온 외부 데이터라 무엇이든
-  // 들어 있을 수 있다. http/https 가 아니면 어떤 것도 여기를 통과하지 못한다.
-  //
-  // 넘기는 값은 렌더러가 보낸 원문이 아니라 sanitizeUrl 이 돌려준 parsed.href 다 —
-  // 파서가 정규화하고 퍼센트 인코딩까지 마친 값이다.
-  ipcMain.handle('shell:openExternal', async (_e, raw) => {
-    const checked = sanitizeUrl(raw)
-    if (!checked.ok) {
-      return { ok: false, code: checked.reason }
-    }
-    try {
-      await shell.openExternal(checked.url)
-      return { ok: true }
-    } catch (err) {
-      return { ok: false, code: 'OPEN_FAILED', message: err.message }
-    }
-  })
+  // 만든 주소도 예외 없이 openChecked 를 지난다. 우리가 만든 문자열이라고
+  // 검증을 건너뛰기 시작하면, 다음 사람이 그 자리에 변수를 넣는다.
+  ipcMain.handle('keep:open', () => openChecked(keepListUrl(accountEmail)))
 
   // 지우기의 유일한 경로. 사이드카의 trash_note 는 node.trash() 를 부른다 —
   // Keep 휴지통으로 보내는 것이고 7일간 복구할 수 있다. node.delete()(영구

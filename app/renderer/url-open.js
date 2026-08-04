@@ -118,6 +118,39 @@ function urlAtCaret (text, caretIndex) {
   return sanitizeUrl(trimDelimiters(tokenAtCaret(text, caretIndex)))
 }
 
+/** 목록 창의 [Keep 열기] 가 여는 주소. 계정을 지정하지 못할 때의 기본값이다. */
+const KEEP_LIST_URL = 'https://keep.google.com/'
+
+/**
+ * 목록 창의 [Keep 열기] 가 브라우저에 넘길 주소를 만든다.
+ *
+ * 그냥 keep.google.com 을 열면 **브라우저의 기본 구글 계정**으로 열린다. 이 앱이
+ * 로그인한 계정과 브라우저 기본 계정이 다르면(회사 계정과 개인 계정을 같이 쓰면
+ * 흔한 일이다) 남의 메모가 열리고, 사용자는 앱과 웹의 내용이 다르다고 읽는다.
+ * 그래서 계정을 힌트로 실어 보낸다.
+ *
+ * **AccountChooser 는 구글이 문서로 약속한 엔드포인트가 아니다.** 언젠가 조용히
+ * 바뀔 수 있다는 뜻이라, 그때도 버튼이 죽지는 않도록 이메일이 없으면 평범한
+ * keep.google.com 으로 떨어진다. 그 계정으로 로그인돼 있지 않으면 구글이
+ * 로그인 화면을 보여주는데, 그것도 맞는 결과다 — 우리가 원한 계정을 묻는 것이다.
+ *
+ * 이메일은 encodeURIComponent 를 지난다. 저장된 값이 이상해도(사용자가 손으로
+ * 넣는 값이다) 질의 문자열의 다른 파라미터로 새어 나가지 않는다.
+ *
+ * @param {unknown} email 이 앱이 로그인한 계정. 없으면 계정 힌트 없이 연다.
+ * @returns {string} https 주소. 언제나 sanitizeUrl 을 통과하는 모양이다.
+ */
+function keepListUrl (email) {
+  const clean = typeof email === 'string' ? email.trim() : ''
+  if (clean === '') return KEEP_LIST_URL
+  return 'https://accounts.google.com/AccountChooser' +
+    `?Email=${encodeURIComponent(clean)}` +
+    `&continue=${encodeURIComponent(KEEP_LIST_URL)}`
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { OPENABLE_PROTOCOLS, tokenAtCaret, trimDelimiters, sanitizeUrl, urlAtCaret }
+  module.exports = {
+    OPENABLE_PROTOCOLS, tokenAtCaret, trimDelimiters, sanitizeUrl, urlAtCaret,
+    keepListUrl, KEEP_LIST_URL
+  }
 }

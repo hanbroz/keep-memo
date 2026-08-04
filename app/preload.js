@@ -24,6 +24,10 @@ contextBridge.exposeInMainWorld('keepSticky', {
   // 문자열 하나를 보내 본다"는 이 함수뿐이고, 실제 openExternal 호출은 검증을
   // 지난 뒤 main 에서만 일어난다.
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
+  // 목록 창의 [Keep 열기]. 주소를 여기서 만들지 않고 main 에 맡기는 이유는
+  // 계정 이메일이 필요하기 때문이다 — 그것 하나 때문에 렌더러에 계정을 넘기지
+  // 않는다. 렌더러가 하는 말은 "Keep 을 열어 달라" 한 마디뿐이다.
+  openKeep: () => ipcRenderer.invoke('keep:open'),
   // 지우기. Keep 휴지통으로 보내는 것이고 7일간 복구할 수 있다(사이드카의
   // node.trash()). 포스트잇의 [삭제] 버튼과 우클릭이 둘 다 확인 뒤에 이것 하나를
   // 부른다 — ✕(closeNote)와 목록 창의 체크 해제는 여기 오지 않는다.

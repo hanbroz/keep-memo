@@ -168,3 +168,45 @@ test('Electron 없이도 require 된다', () => {
   // 테스트가 돌지 않고, 그러면 검증의 진짜 자리(main)를 못 지킨다.
   assert.strictEqual(typeof sanitizeUrl, 'function')
 })
+
+// --- [Keep 열기] 주소 ---------------------------------------------------------
+//
+// 그냥 keep.google.com 을 열면 브라우저의 기본 구글 계정으로 열린다. 회사 계정과
+// 개인 계정을 같이 쓰면 남의 메모가 열리고, 앱과 웹의 내용이 다르다고 읽힌다.
+
+const { keepListUrl, KEEP_LIST_URL } = require('../renderer/url-open')
+
+test('계정을 알면 그 계정으로 열도록 주소에 실어 보낸다', () => {
+  const url = keepListUrl('someone@gmail.com')
+  const parsed = new URL(url)
+  assert.strictEqual(parsed.host, 'accounts.google.com')
+  assert.strictEqual(parsed.searchParams.get('Email'), 'someone@gmail.com')
+  assert.strictEqual(parsed.searchParams.get('continue'), KEEP_LIST_URL)
+})
+
+test('계정을 모르면 평범한 keep.google.com 으로 떨어진다', () => {
+  // AccountChooser 는 구글이 문서로 약속한 엔드포인트가 아니다. 계정이 없다고
+  // 버튼이 죽으면 안 된다.
+  for (const missing of [null, undefined, '', '   ', 42, {}]) {
+    assert.strictEqual(keepListUrl(missing), KEEP_LIST_URL, JSON.stringify(missing))
+  }
+})
+
+test('이메일이 이상해도 질의 문자열로 새어 나가지 않는다', () => {
+  // 사용자가 손으로 넣는 값이다. 인코딩하지 않으면 & 하나로 다른 파라미터를
+  // 덧붙일 수 있다.
+  const url = keepListUrl('a@b.com&continue=https://evil.example/')
+  const parsed = new URL(url)
+  assert.strictEqual(parsed.searchParams.get('continue'), KEEP_LIST_URL,
+    'continue 가 덮이면 안 된다')
+  assert.strictEqual(parsed.searchParams.get('Email'), 'a@b.com&continue=https://evil.example/')
+})
+
+test('만들어진 주소는 언제나 sanitizeUrl 을 통과한다', () => {
+  // main 은 이 주소도 예외 없이 openChecked 에 넣는다. 여기서 못 지나는 모양이
+  // 나오면 버튼이 아무 일도 안 하는 것으로 보인다.
+  for (const email of ['a@b.com', '', '이름@도메인.한국', 'a b@c.com']) {
+    const checked = sanitizeUrl(keepListUrl(email))
+    assert.strictEqual(checked.ok, true, `${JSON.stringify(email)} → ${keepListUrl(email)}`)
+  }
+})

@@ -235,6 +235,20 @@ document.getElementById('new').addEventListener('click', async () => {
   statusEl.textContent = '새 메모를 바탕화면에 띄웠습니다'
 })
 
+// --- Keep 열기 ---------------------------------------------------------------
+//
+// 주소를 여기서 만들지 않는다. 이 앱이 로그인한 계정을 실어 보내야 브라우저의
+// 기본 구글 계정이 아니라 **그 계정의** 메모가 열리는데(url-open.js 의
+// keepListUrl), 그 이메일을 렌더러로 끌어오지 않으려고 만드는 일까지 main 에
+// 맡겼다. 실제로 여는 것도 main 이다 — 검증하는 자리는 언제나 한 곳이어야 한다.
+document.getElementById('open-keep').addEventListener('click', async () => {
+  const res = await window.keepSticky.openKeep()
+  // 아무 일도 일어나지 않는 것이 제일 나쁘다 — 사용자는 기능이 고장 났다고
+  // 읽는다. 브라우저가 없거나 열기가 거절되면 상태 줄로 알린다.
+  if (res && res.ok) return
+  statusEl.textContent = '브라우저를 열지 못했습니다.'
+})
+
 // --- 검색 ------------------------------------------------------------------
 //
 // 버튼은 없다. 치는 대로 걸러진다. 거르는 규칙은 note-filter.js 에 있고 여기서는
