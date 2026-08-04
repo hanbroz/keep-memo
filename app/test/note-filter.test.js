@@ -154,3 +154,57 @@ test('검색은 보관 여부와 무관하게 걸린다', () => {
 test('archived 필드가 없는 응답(옛 사이드카)도 그대로 다 나온다', () => {
   assert.deepStrictEqual(ids(filterNotes(NOTES, '')), ['n1', 'n2', 'n3', 'n4'])
 })
+
+// --- 라벨 필터 (Keep 의 '라벨' = 카테고리) -------------------------------------
+//
+// 언제나 id 로 견준다. 이름은 사용자가 언제든 바꿀 수 있어서, 이름을 열쇠로 쓰면
+// 이름을 바꾼 순간 그 라벨이 붙은 메모를 전부 놓친다.
+
+const { noteHasLabel, LABEL_FILTER_NONE } = require('../renderer/note-filter')
+
+const WORK = { id: 'tag.work', name: '업무' }
+const HOME = { id: 'tag.home', name: '개인' }
+const LABELLED = [
+  { id: 'a', title: '보고서', text: '분기', labels: [WORK] },
+  { id: 'b', title: '장보기', text: '우유', labels: [HOME] },
+  { id: 'c', title: '회의 준비', text: '자료', labels: [WORK, HOME] },
+  { id: 'd', title: '낙서', text: '아무거나', labels: [] },
+  { id: 'e', title: '옛 메모', text: '옛것' } // labels 키가 아예 없는 응답
+]
+
+test('라벨을 고르면 그 라벨이 붙은 메모만 나온다', () => {
+  assert.deepStrictEqual(ids(filterNotes(LABELLED, '', 'tag.work')), ['a', 'c'])
+  assert.deepStrictEqual(ids(filterNotes(LABELLED, '', 'tag.home')), ['b', 'c'])
+})
+
+test('전체(빈 값)를 고르면 라벨로 거르지 않는다', () => {
+  assert.deepStrictEqual(ids(filterNotes(LABELLED, '', '')), ['a', 'b', 'c', 'd', 'e'])
+  assert.deepStrictEqual(ids(filterNotes(LABELLED, '')), ['a', 'b', 'c', 'd', 'e'])
+})
+
+test('라벨 없음을 고르면 하나도 안 붙은 메모만 나온다', () => {
+  // labels 키가 없는 옛 응답도 '없음'으로 본다.
+  assert.deepStrictEqual(ids(filterNotes(LABELLED, '', LABEL_FILTER_NONE)), ['d', 'e'])
+})
+
+test('라벨 필터와 검색은 AND 다 — 카테고리 안에서 찾기', () => {
+  assert.deepStrictEqual(ids(filterNotes(LABELLED, '회의', 'tag.work')), ['c'])
+  assert.deepStrictEqual(filterNotes(LABELLED, '장보기', 'tag.work'), [])
+})
+
+test('없는 라벨 id 로 거르면 아무것도 안 나온다', () => {
+  // 방금 지운 라벨이 필터에 남아 있는 경우다. 조용히 전체를 보여주면
+  // 사용자는 필터가 걸린 줄 알고 엉뚱한 목록을 읽는다.
+  assert.deepStrictEqual(filterNotes(LABELLED, '', 'tag.지워짐'), [])
+})
+
+test('noteHasLabel 은 이름이 아니라 id 로 견준다', () => {
+  const note = { labels: [{ id: 'tag.work', name: '업무' }] }
+  assert.strictEqual(noteHasLabel(note, 'tag.work'), true)
+  assert.strictEqual(noteHasLabel(note, '업무'), false, '이름으로는 걸리면 안 된다')
+})
+
+test('LABEL_FILTER_NONE 은 진짜 라벨 id 와 부딪히지 않는다', () => {
+  // Keep 의 라벨 id 는 'tag.' 로 시작한다.
+  assert.ok(!LABEL_FILTER_NONE.startsWith('tag.'))
+})

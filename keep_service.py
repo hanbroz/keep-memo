@@ -31,6 +31,12 @@ ALLOWED_METHODS = frozenset({
     "update_note",
     "update_checklist",
     "trash_note",
+    # 라벨은 노트의 필드가 아니라 계정에 따로 사는 개체라 자기 RPC 를 갖는다.
+    "list_labels",
+    "create_label",
+    "rename_label",
+    "delete_label",
+    "set_note_labels",
 })
 # create_checklist 는 없다. 이 앱이 만드는 메모는 언제나 text 노트다 —
 # 체크리스트는 메모의 종류가 아니라 본문 텍스트 안의 규약이기 때문이다
@@ -96,6 +102,11 @@ def _serialize(node) -> dict:
         # 호환도 여기서 끊지 않는다.
         "created": node.timestamps.created.isoformat(),
         "updated": node.timestamps.updated.isoformat(),
+        # 라벨은 노트의 필드가 아니라 계정에 따로 사는 개체이고, 노트는 그것을
+        # 참조할 뿐이다(다대다). 그래서 id 와 name 을 같이 싣는다 — 화면은
+        # 이름을 그려야 하고, 붙였다 떼는 것은 id 로 해야 한다. 이름은 사용자가
+        # 언제든 바꿀 수 있으므로 이름을 열쇠로 쓰면 안 된다.
+        "labels": _serialize_labels(node),
         "kind": "list" if _is_checklist(node) else "note",
     }
     if data["kind"] == "list":
@@ -161,6 +172,66 @@ def _serialize_items(node) -> list:
         {"id": item.id, "text": item.text or "", "checked": bool(item.checked)}
         for item in node.items
     ]
+
+
+def _serialize_labels(node) -> list:
+    """노트에 붙은 라벨을 {id, name} 목록으로 만든다.
+
+    **id 와 name 을 둘 다 싣는 것이 요점이다.** 화면은 이름을 그려야 하지만
+    붙였다 떼는 것은 id 로 해야 한다 — 이름은 사용자가 언제든 바꿀 수 있으므로
+    이름을 열쇠로 쓰면 이름을 바꾼 순간 그 라벨이 붙은 메모를 전부 놓친다.
+
+    이름순으로 고정한다. NodeLabels.all() 은 내부 dict 순서를 그대로 주는데,
+    그것은 붙인 순서에 가깝고 다시 그릴 때마다 같다는 보장이 없다. 화면에 나가는
+    값이 이유 없이 자리를 바꾸면 안 된다.
+    """
+    return sorted(
+        ({"id": label.id, "name": label.name or ""} for label in node.labels.all()),
+        key=lambda item: item["name"],
+    )
+
+
+# 라벨 이름의 길이 상한. Keep 자체의 제한이 문서화돼 있지 않아 우리가 정한다 —
+# 없으면 본문 한 편을 라벨 이름으로 넣을 수 있고, 그러면 목록 창의 필터와
+# 포스트잇의 라벨 패널이 통째로 망가진다.
+LABEL_NAME_MAX = 50
+
+
+def _validate_label_name(raw) -> str:
+    """라벨 이름을 검증하고 다듬는다. 앞뒤 공백은 떼고 돌려준다.
+
+    렌더러는 신뢰 경계의 바깥쪽이다. 빈 이름을 만들면 목록에서 고를 수 없는
+    유령 라벨이 생기고, 그것을 지우려면 다시 이 앱을 거쳐야 한다.
+    """
+    if not isinstance(raw, str):
+        raise BadRequest(f"라벨 이름은 문자열이어야 한다: {type(raw).__name__} 를 받았다")
+    name = raw.strip()
+    if name == "":
+        raise BadRequest("라벨 이름이 비어 있다")
+    if len(name) > LABEL_NAME_MAX:
+        raise BadRequest(f"라벨 이름이 너무 길다: {len(name)}자 (최대 {LABEL_NAME_MAX}자)")
+    return name
+
+
+def _validate_label_ids(raw) -> list:
+    """붙일 라벨 id 묶음을 검증한다. 순서는 지키고 중복만 걷어낸다.
+
+    중복은 거절하지 않는다 — 같은 라벨을 두 번 붙이라는 요청의 뜻은 "붙어 있어라"
+    하나뿐이라 모호하지 않고, 화면(체크박스)에서 실수로 만들어질 수 있는 모양이다.
+    반면 문자열이 아닌 id 는 화면의 버그이므로 조용히 넘기지 않는다.
+    """
+    if not isinstance(raw, list):
+        raise BadRequest(f"라벨 id 묶음은 배열이어야 한다: {type(raw).__name__} 를 받았다")
+    out = []
+    seen = set()
+    for index, label_id in enumerate(raw):
+        if not isinstance(label_id, str) or label_id == "":
+            raise BadRequest(f"{index}번째 라벨 id 가 비어 있거나 문자열이 아니다")
+        if label_id in seen:
+            continue
+        seen.add(label_id)
+        out.append(label_id)
+    return out
 
 
 def _validate_items(raw) -> list:
@@ -414,6 +485,102 @@ class KeepService:
         node.trash()  # delete() 가 아니다. Keep 휴지통에서 7일간 복구 가능.
         self._sync_or_drop(keep)
         return {"ok": True}
+
+    # --- 라벨 -------------------------------------------------------------
+    #
+    # 라벨은 노트의 필드가 아니라 **계정에 따로 사는 개체**다. 노트는 그것을
+    # 참조할 뿐이고(다대다), 그래서 색이나 보관처럼 update_note 에 얹지 않고
+    # 자기 RPC 를 갖는다. 이름이 아니라 id 로 다루는 것이 이 묶음 전체의 규칙이다 —
+    # 이름은 사용자가 언제든 바꿀 수 있다.
+
+    def list_labels(self) -> dict:
+        """계정의 라벨 전부. 목록 창의 필터와 포스트잇의 선택 목록이 같이 쓴다."""
+        keep = self._require_keep()
+        return {
+            "labels": sorted(
+                ({"id": label.id, "name": label.name or ""} for label in keep.labels()),
+                key=lambda item: item["name"],
+            )
+        }
+
+    def create_label(self, name: str) -> dict:
+        keep = self._require_keep()
+        clean = _validate_label_name(name)
+        # findLabel 은 대소문자를 가리지 않는다. 먼저 물어보는 이유는 gkeepapi 의
+        # LabelException("Label exists") 보다 사람이 읽을 수 있는 메시지를 주기
+        # 위해서다 — 그것은 여기서 INTERNAL 로 떨어진다.
+        if keep.findLabel(clean) is not None:
+            raise BadRequest(f"같은 이름의 라벨이 이미 있다: {clean}")
+        label = keep.createLabel(clean)
+        self._sync_or_drop(keep)
+        return {"label": {"id": label.id, "name": label.name or ""}}
+
+    def rename_label(self, id: str, name: str) -> dict:  # noqa: A002
+        keep = self._require_keep()
+        clean = _validate_label_name(name)
+        label = keep.getLabel(id)
+        if label is None:
+            raise NotFound(f"없는 라벨: {id}")
+        # 자기 자신으로 바꾸는 것(대소문자만 고치기)은 막지 않는다. 다른 라벨과
+        # 부딪히는 경우만 거절한다.
+        existing = keep.findLabel(clean)
+        if existing is not None and existing.id != id:
+            raise BadRequest(f"같은 이름의 라벨이 이미 있다: {clean}")
+        label.name = clean
+        self._sync_or_drop(keep)
+        return {"label": {"id": label.id, "name": label.name or ""}}
+
+    def delete_label(self, id: str) -> dict:  # noqa: A002
+        """라벨을 지운다. **그 라벨이 붙은 모든 메모에서 함께 떨어진다.**
+
+        메모 자체는 지워지지 않는다 — 분류만 사라진다. 그래도 되돌릴 수 없는
+        일이라(휴지통 같은 것이 없다) 부르는 쪽이 반드시 확인을 받아야 한다.
+        """
+        keep = self._require_keep()
+        if keep.getLabel(id) is None:
+            raise NotFound(f"없는 라벨: {id}")
+        keep.deleteLabel(id)
+        self._sync_or_drop(keep)
+        return {"ok": True}
+
+    def set_note_labels(self, id: str, label_ids) -> dict:  # noqa: A002
+        """이 메모에 붙는 라벨을 **통째로 갈아 끼운다**(더하기가 아니다).
+
+        add/remove 를 따로 두지 않고 "최종 상태"를 받는다. 화면이 체크박스 묶음
+        이므로 그쪽이 아는 것도 최종 상태이고, 같은 요청을 두 번 보내도 결과가
+        같다. add/remove 였다면 응답을 놓친 화면이 무엇을 다시 보내야 할지
+        알 수 없다.
+
+        모르는 id 는 조용히 건너뛰지 않는다. 건너뛰면 사용자가 고른 분류 중 일부가
+        아무 신호 없이 사라진다 — 항목 검증(_validate_items)과 같은 원칙이다.
+        """
+        keep = self._require_keep()
+        node = keep.get(id)
+        if node is None:
+            raise NotFound(id)
+
+        wanted = {}
+        for label_id in _validate_label_ids(label_ids):
+            label = keep.getLabel(label_id)
+            if label is None:
+                raise BadRequest(f"없는 라벨 id: {label_id}")
+            wanted[label_id] = label
+
+        # 노드를 건드리는 것은 전부 검증을 지난 뒤다. 다섯 개 중 넷만 붙고 다섯째
+        # 에서 터지면 반쯤 적용된 채로 남는다.
+        current = {label.id: label for label in node.labels.all()}
+        for label_id, label in wanted.items():
+            if label_id not in current:
+                node.labels.add(label)
+        for label_id, label in current.items():
+            if label_id not in wanted:
+                node.labels.remove(label)
+
+        self._sync_or_drop(keep)
+        after = keep.get(id)
+        if after is None:
+            raise NotFound(id)
+        return {"note": _serialize(after)}
 
     # --- 내부 -------------------------------------------------------------
 

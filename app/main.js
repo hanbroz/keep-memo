@@ -897,6 +897,32 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('notes:list', () => sidecar.call('list_notes'))
 
+  // --- 라벨 -----------------------------------------------------------------
+  //
+  // 라벨은 노트의 필드가 아니라 계정에 따로 사는 개체라(다대다) 자기 RPC 를
+  // 갖는다. 다섯이 전부 같은 모양이므로 shape 를 만드는 일도 한 곳에 둔다 —
+  // 사이드카가 던지는 오류를 { ok:false, code } 로 바꿔야 렌더러가 AUTH_REQUIRED
+  // 를 다른 실패와 구별해 재로그인으로 이어갈 수 있다(notes:update 와 같은 관례).
+  const labelCall = async (method, params) => {
+    try {
+      return { ok: true, ...(await sidecar.call(method, params)) }
+    } catch (err) {
+      return { ok: false, message: err.message, code: err.code }
+    }
+  }
+
+  ipcMain.handle('labels:list', () => labelCall('list_labels'))
+  ipcMain.handle('labels:create', (_e, name) => labelCall('create_label', { name }))
+  ipcMain.handle('labels:rename', (_e, id, name) => labelCall('rename_label', { id, name }))
+  ipcMain.handle('labels:delete', (_e, id) => labelCall('delete_label', { id }))
+  ipcMain.handle('labels:setForNote', async (_e, id, labelIds) => {
+    const res = await labelCall('set_note_labels', { id, label_ids: labelIds })
+    // 라벨이 바뀌면 목록 창의 행 표시와 필터가 달라진다. 순서는 그대로지만
+    // 어느 행에 무엇이 붙었는지가 바뀌므로 다시 읽어야 한다.
+    if (res.ok) notifyNotesChanged()
+    return res
+  })
+
   // 목록 창의 [동기화]. list_notes 는 이 세션이 맨 처음 authenticate() 했을
   // 때의 상태를 그대로 보여줄 뿐이라, 다른 기기(폰이나 keep.google.com)에서
   // 생긴 변경 — 특히 삭제 — 가 이 세션에는 영영 안 보이는 문제가 있었다.

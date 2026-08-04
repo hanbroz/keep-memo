@@ -29,6 +29,14 @@ const listEl = document.getElementById('list')
 const statusEl = document.getElementById('status')
 const searchEl = document.getElementById('search')
 const syncEl = document.getElementById('sync')
+const labelFilterEl = document.getElementById('label-filter')
+const labelsPanelEl = document.getElementById('labels')
+const labelsToggleEl = document.getElementById('labels-toggle')
+const labelRowsEl = document.getElementById('label-rows')
+const newLabelEl = document.getElementById('new-label')
+
+// 계정의 라벨 전부. 필터의 항목과 관리 패널의 행이 같은 값을 본다.
+let allLabels = []
 const panelEl = document.getElementById('settings')
 const toggleEl = document.getElementById('settings-toggle')
 const familyEl = document.getElementById('font-family')
@@ -57,7 +65,7 @@ function showEmpty (message) {
 /** 지금의 검색어에 맞는 행만 다시 그린다. 체크 상태는 checkedIds 에서 온다. */
 function render () {
   const query = searchEl.value
-  const shown = filterNotes(allNotes, query)
+  const shown = filterNotes(allNotes, query, labelFilterEl.value)
   renderedRows.length = 0
   listEl.textContent = ''
 
@@ -109,6 +117,20 @@ function render () {
       tag.className = 'tag'
       tag.textContent = tagText
       label.append(tag)
+    }
+
+    // 이 메모가 어느 카테고리인지. 이름은 Keep 에서 온 외부 데이터이므로
+    // textContent 로만 넣는다(innerHTML 경로를 두지 않는다).
+    //
+    // 반복 변수를 noteLabel 로 둔 것은 취향이 아니다 — 위 행의 <label> 요소가
+    // 이미 label 이라, 여기서 label 을 쓰면 그것을 가려 칩이 자기 자신 안으로
+    // 들어간다.
+    for (const noteLabel of Array.isArray(note.labels) ? note.labels : []) {
+      const chip = document.createElement('span')
+      chip.className = 'label-chip'
+      chip.textContent = noteLabel.name
+      chip.title = noteLabel.name
+      label.append(chip)
     }
 
     const date = document.createElement('span')
@@ -282,6 +304,160 @@ document.getElementById('open-keep').addEventListener('click', async () => {
 // 돌아왔다 하며 깜박인다. isComposing 이 켜진 input 은 흘려보내고, 조합이
 // 끝나는 compositionend 에서 한 번 그린다. 그동안 화면에는 직전까지 확정된
 // 글자로 거른 결과가 그대로 남아 있다.
+// --- 라벨 (카테고리) ---------------------------------------------------------
+//
+// 라벨은 노트의 필드가 아니라 계정에 따로 사는 개체다. 그래서 관리(이름 바꾸기,
+// 지우기)를 메모 한 장이 아니라 이 창에 둔다 — 한 번의 이름 변경이 그 라벨이
+// 붙은 모든 메모에 걸린다.
+//
+// 언제나 id 로 다룬다. 이름을 열쇠로 쓰면 이름을 바꾼 순간 그 라벨이 붙은 메모를
+// 전부 놓친다.
+
+/** 필터 <select> 를 지금의 라벨로 다시 채운다. 고른 값은 살아 있으면 지킨다. */
+function buildLabelFilter () {
+  const previous = labelFilterEl.value
+  labelFilterEl.textContent = ''
+  const add = (value, text) => {
+    const opt = document.createElement('option')
+    opt.value = value
+    opt.textContent = text // 라벨 이름은 외부 데이터다. innerHTML 경로를 두지 않는다.
+    labelFilterEl.append(opt)
+  }
+  add('', '모든 라벨')
+  add(LABEL_FILTER_NONE, '라벨 없음')
+  for (const label of allLabels) add(label.id, label.name)
+
+  // 방금 지운 라벨이 골라져 있었다면 '모든 라벨'로 돌아간다. 그대로 두면 없는
+  // id 로 걸러 목록이 통째로 비고, 사용자는 메모가 사라졌다고 읽는다.
+  labelFilterEl.value = [...labelFilterEl.options].some((o) => o.value === previous)
+    ? previous
+    : ''
+  labelFilterEl.classList.toggle('on', labelFilterEl.value !== '')
+}
+
+/** 관리 패널의 행을 다시 그린다. 행마다 이름 입력칸과 [삭제] 가 있다. */
+function buildLabelRows () {
+  labelRowsEl.textContent = ''
+  if (allLabels.length === 0) {
+    const li = document.createElement('li')
+    const msg = document.createElement('span')
+    msg.className = 'hint'
+    msg.textContent = '아직 라벨이 없습니다. 아래에서 만들어 보세요.'
+    li.append(msg)
+    labelRowsEl.append(li)
+    return
+  }
+  for (const label of allLabels) {
+    const li = document.createElement('li')
+
+    const input = document.createElement('input')
+    input.type = 'text'
+    input.value = label.name
+    input.maxLength = 50
+    input.setAttribute('aria-label', `${label.name} 이름 바꾸기`)
+    // change 는 칸을 벗어나거나 Enter 를 쳤을 때만 온다. 글자마다 보내면
+    // 한 글자 지운 순간 "빈 이름"으로 거절당한다.
+    input.addEventListener('change', () => { renameLabel(label, input) })
+
+    const del = document.createElement('button')
+    del.type = 'button'
+    del.className = 'label-delete'
+    del.textContent = '삭제'
+    del.title = `${label.name} 라벨을 지웁니다 (메모는 지워지지 않습니다)`
+    del.addEventListener('click', () => { deleteLabel(label) })
+
+    li.append(input, del)
+    labelRowsEl.append(li)
+  }
+}
+
+/** 계정의 라벨을 받아와 필터와 관리 패널을 다시 세운다. */
+async function loadLabels () {
+  const res = await window.keepSticky.listLabels()
+  if (!res.ok) {
+    statusEl.textContent = res.code === 'AUTH_REQUIRED'
+      ? '재로그인이 필요합니다'
+      : `라벨을 불러오지 못했습니다: ${res.message}`
+    return
+  }
+  allLabels = Array.isArray(res.labels) ? res.labels : []
+  buildLabelFilter()
+  buildLabelRows()
+}
+
+async function renameLabel (label, input) {
+  const next = input.value.trim()
+  if (next === '' || next === label.name) {
+    input.value = label.name // 되돌린다. 빈 이름은 사이드카가 거절한다.
+    return
+  }
+  const res = await window.keepSticky.renameLabel(label.id, next)
+  if (!res.ok) {
+    input.value = label.name
+    statusEl.textContent = `이름을 바꾸지 못했습니다: ${res.message}`
+    return
+  }
+  statusEl.textContent = `'${label.name}' 을 '${res.label.name}' 으로 바꿨습니다`
+  await loadLabels()
+  // 행에 붙은 칩의 글자도 바뀌어야 한다. 노트가 들고 있는 것은 이름의 복사본이다.
+  await reload()
+}
+
+async function deleteLabel (label) {
+  // 되돌릴 수 없다(라벨에는 휴지통이 없다). 반드시 물어본다 — 포스트잇의
+  // [삭제] 와 같은 관례다.
+  const ok = window.confirm(
+    `'${label.name}' 라벨을 지울까요?\n\n` +
+    '이 라벨이 붙은 모든 메모에서 떨어집니다. 메모 자체는 지워지지 않습니다.'
+  )
+  if (!ok) return
+  const res = await window.keepSticky.deleteLabel(label.id)
+  if (!res.ok) {
+    statusEl.textContent = `라벨을 지우지 못했습니다: ${res.message}`
+    return
+  }
+  statusEl.textContent = `'${label.name}' 라벨을 지웠습니다`
+  await loadLabels()
+  await reload()
+}
+
+async function addLabel () {
+  const name = newLabelEl.value.trim()
+  if (name === '') return
+  const res = await window.keepSticky.createLabel(name)
+  if (!res.ok) {
+    statusEl.textContent = `라벨을 만들지 못했습니다: ${res.message}`
+    return
+  }
+  newLabelEl.value = ''
+  statusEl.textContent = `'${res.label.name}' 라벨을 만들었습니다`
+  await loadLabels()
+}
+
+labelFilterEl.addEventListener('change', () => {
+  labelFilterEl.classList.toggle('on', labelFilterEl.value !== '')
+  render()
+})
+
+labelsToggleEl.addEventListener('click', () => {
+  labelsPanelEl.hidden = !labelsPanelEl.hidden
+  labelsToggleEl.setAttribute('aria-expanded', String(!labelsPanelEl.hidden))
+  if (!labelsPanelEl.hidden) newLabelEl.focus()
+})
+document.getElementById('labels-close').addEventListener('click', () => {
+  labelsPanelEl.hidden = true
+  labelsToggleEl.setAttribute('aria-expanded', 'false')
+  labelsToggleEl.focus()
+})
+document.getElementById('add-label').addEventListener('click', () => { addLabel() })
+newLabelEl.addEventListener('keydown', (e) => {
+  // 한글은 IME 조합을 거친다. 조합을 끝내는 Enter 까지 "추가"로 읽으면 글자가
+  // 덜 만들어진 채로 보내진다 — 검색칸이 isComposing 을 보는 것과 같은 이유다.
+  if (e.key !== 'Enter' || e.isComposing) return
+  e.preventDefault()
+  addLabel()
+})
+
 searchEl.addEventListener('input', (e) => {
   if (e.isComposing) return
   render()
@@ -424,7 +600,16 @@ window.keepSticky.getFontSettings().then((settings) => {
 // 체크만 해두고 [완료] 를 아직 안 누른 사용자의 선택이 날아간다. 창이 새로 뜨는
 // 지금은 어차피 체크를 처음 세우는 참이라 잃을 것이 없다. ([완료] 가 창을 닫으므로
 // 실제로 대부분의 '열기'가 이 경로다. 이미 떠 있는 창은 [동기화] 로 맞춘다.)
-reload().then(() => syncNotes()).catch((err) => {
+reload().then(() => {
+  // 라벨은 목록과 독립이라 기다리지 않는다 — 실패해도 목록은 그대로 쓸 수 있어야
+  // 하고, 성공하면 필터가 조용히 채워진다.
+  loadLabels().catch(() => {})
+  return syncNotes()
+}).then(() => {
+  // 동기화가 끝나면 라벨도 서버 것으로 다시 읽는다. 폰에서 만든 라벨이 여기서
+  // 처음 보인다.
+  loadLabels().catch(() => {})
+}).catch((err) => {
   // 목록을 못 받아왔다. notesLoaded 가 서지 않으므로 [완료] 는 아무것도 내리지
   // 않는다 — 사용자가 이유를 알 수 있게 상태 줄에도 남긴다.
   // (syncNotes 는 스스로 실패를 삼키고 상태 줄에 남기므로 여기 오지 않는다.)

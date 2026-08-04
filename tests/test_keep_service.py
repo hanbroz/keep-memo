@@ -117,6 +117,41 @@ class FakeTimestamps:
         self.updated = self.created
 
 
+class FakeLabel:
+    """gkeepapi.node.Label 대역. 계정에 따로 사는 개체이고 노트는 참조만 한다."""
+
+    def __init__(self, label_id, name):
+        self.id = label_id
+        self.name = name
+
+
+class FakeNodeLabels:
+    """gkeepapi.node.NodeLabels 대역.
+
+    실제와 같이 id → Label 의 dict 를 들고 add/remove/all 을 준다. all() 이
+    dict 순서를 그대로 주는 것까지 같다 — _serialize_labels 가 이름순으로
+    다시 세우는지 확인하려면 대역도 정렬해 주면 안 된다.
+    """
+
+    def __init__(self):
+        self._labels = {}
+
+    def add(self, label):
+        self._labels[label.id] = label
+
+    def remove(self, label):
+        self._labels.pop(label.id, None)
+
+    def all(self):
+        return list(self._labels.values())
+
+    def get(self, label_id):
+        return self._labels.get(label_id)
+
+    def __len__(self):
+        return len(self._labels)
+
+
 class FakeColor:
     name = "Yellow"
 
@@ -135,6 +170,7 @@ class FakeNode:
         self.archived = False
         self.trashed = False
         self.timestamps = FakeTimestamps()
+        self.labels = FakeNodeLabels()
         self.type = ks.gkeepapi.node.NodeType.Note
 
     def trash(self):
@@ -199,6 +235,8 @@ class FakeKeepWithNodes(FakeKeep):
         self.deferred_trash_ids = set()
         # 다음 sync() 호출을 실패하게 만드는 훅. None 이면 평소대로 동작한다.
         self.sync_error = None
+        # 계정의 라벨 저장소. 노트와 독립이라 따로 산다.
+        self.label_store = {}
 
     def createNote(self, title=None, text=None):  # noqa: N802 - gkeepapi 명명 규칙
         node = FakeNode(f"n{len(self.nodes) + 1}", title or "", text or "")
@@ -212,6 +250,37 @@ class FakeKeepWithNodes(FakeKeep):
 
     def get(self, node_id):
         return self.nodes.get(node_id)
+
+    # --- 라벨 (gkeepapi.Keep 의 라벨 API 대역) ---
+
+    def createLabel(self, name):  # noqa: N802 - gkeepapi 명명 규칙
+        if self.findLabel(name) is not None:
+            raise ks.gkeepapi.exception.LabelException("Label exists")
+        label = FakeLabel(f"tag.{len(self.label_store) + 1}", name)
+        self.label_store[label.id] = label
+        return label
+
+    def findLabel(self, query, create=False):  # noqa: N802 - gkeepapi 명명 규칙
+        # 실제와 같이 대소문자를 가리지 않는다.
+        needle = query.lower() if isinstance(query, str) else query
+        for label in self.label_store.values():
+            if label.name.lower() == needle:
+                return label
+        return self.createLabel(query) if create and isinstance(query, str) else None
+
+    def getLabel(self, label_id):  # noqa: N802 - gkeepapi 명명 규칙
+        return self.label_store.get(label_id)
+
+    def deleteLabel(self, label_id):  # noqa: N802 - gkeepapi 명명 규칙
+        label = self.label_store.pop(label_id, None)
+        if label is None:
+            return
+        # 실제 Keep 과 같이 붙어 있던 모든 노트에서 함께 떨어진다.
+        for node in self.nodes.values():
+            node.labels.remove(label)
+
+    def labels(self):
+        return list(self.label_store.values())
 
     def find(self, **kwargs):
         return iter([n for n in self.nodes.values() if not n.trashed])
@@ -489,9 +558,10 @@ def test_text_note_serializes_with_the_expected_fields(account):
     """
     created = _call(account, "create_note", title="제목", text="본문")["result"]["note"]
     assert set(created) == {"id", "title", "text", "color", "pinned", "archived",
-                            "created", "updated", "kind"}
+                            "created", "updated", "labels", "kind"}
     assert created["kind"] == "note"
     assert "items" not in created
+    assert created["labels"] == [], "라벨을 붙인 적 없는 메모는 빈 배열이다"
     assert created["title"] == "제목"
     assert created["text"] == "본문"
     assert created["color"] == "Yellow"
@@ -1055,3 +1125,173 @@ def test_pinned_and_archived_can_be_set_together(account):
     res = _call(account, "update_note", id=created["id"], pinned=True, archived=True)["result"]
     assert res["note"]["pinned"] is True
     assert res["note"]["archived"] is True
+
+
+# --- 라벨 (Keep 의 '라벨' = 카테고리) -----------------------------------------
+#
+# 라벨은 노트의 필드가 아니라 계정에 따로 사는 개체다. 노트는 그것을 참조할
+# 뿐이고(다대다), 그래서 색이나 보관과 달리 자기 RPC 를 갖는다. 이름이 아니라
+# id 로 다루는 것이 이 묶음 전체의 규칙이다 — 이름은 언제든 바뀔 수 있다.
+
+
+def _make_label(account, name):
+    return _call(account, "create_label", name=name)["result"]["label"]
+
+
+def test_create_and_list_labels(account):
+    _make_label(account, "업무")
+    _make_label(account, "개인")
+
+    labels = _call(account, "list_labels")["result"]["labels"]
+    assert [item["name"] for item in labels] == ["개인", "업무"], "이름순이다"
+    assert all(item["id"] for item in labels), "id 가 실려 있다"
+
+
+def test_create_label_rejects_duplicate_name_case_insensitively(account):
+    _make_label(account, "Work")
+    for dup in ["Work", "work", "  WORK  "]:
+        res = _call(account, "create_label", name=dup)
+        assert res["error"]["code"] == "BAD_REQUEST", f"{dup!r} 이 통과했다"
+    assert len(_call(account, "list_labels")["result"]["labels"]) == 1
+
+
+def test_create_label_rejects_empty_or_overlong_name(account):
+    for bad in ["", "   ", 42, None, [], "가" * (ks.LABEL_NAME_MAX + 1)]:
+        res = _call(account, "create_label", name=bad)
+        assert res["error"]["code"] == "BAD_REQUEST", f"{bad!r} 이 통과했다"
+    assert _call(account, "list_labels")["result"]["labels"] == []
+
+
+def test_label_name_is_trimmed(account):
+    label = _make_label(account, "  업무  ")
+    assert label["name"] == "업무"
+
+
+def test_set_note_labels_replaces_the_whole_set(account):
+    note = _call(account, "create_note", title="t", text="본문")["result"]["note"]
+    work = _make_label(account, "업무")
+    personal = _make_label(account, "개인")
+
+    res = _call(account, "set_note_labels", id=note["id"],
+                label_ids=[work["id"], personal["id"]])["result"]
+    assert [item["name"] for item in res["note"]["labels"]] == ["개인", "업무"]
+
+    # 더하기가 아니라 갈아 끼우기다 — 하나만 보내면 나머지는 떨어진다.
+    res = _call(account, "set_note_labels", id=note["id"], label_ids=[work["id"]])["result"]
+    assert [item["name"] for item in res["note"]["labels"]] == ["업무"]
+
+    res = _call(account, "set_note_labels", id=note["id"], label_ids=[])["result"]
+    assert res["note"]["labels"] == []
+
+
+def test_set_note_labels_is_idempotent(account):
+    note = _call(account, "create_note", title="t", text="본문")["result"]["note"]
+    work = _make_label(account, "업무")
+    for _ in range(3):
+        res = _call(account, "set_note_labels", id=note["id"], label_ids=[work["id"]])["result"]
+        assert [item["id"] for item in res["note"]["labels"]] == [work["id"]]
+
+
+def test_set_note_labels_rejects_unknown_id_without_touching_the_note(account):
+    """모르는 id 를 조용히 건너뛰면 사용자가 고른 분류 중 일부가 신호 없이 사라진다.
+    게다가 노드를 반쯤 고쳐 놓고 터지면 안 된다 — 검증이 먼저다."""
+    note = _call(account, "create_note", title="t", text="본문")["result"]["note"]
+    work = _make_label(account, "업무")
+    _call(account, "set_note_labels", id=note["id"], label_ids=[work["id"]])
+
+    res = _call(account, "set_note_labels", id=note["id"],
+                label_ids=[work["id"], "tag.없는것"])
+    assert res["error"]["code"] == "BAD_REQUEST"
+    after = _call(account, "list_notes")["result"]["notes"][0]
+    assert [item["id"] for item in after["labels"]] == [work["id"]], "그대로여야 한다"
+
+
+def test_set_note_labels_rejects_bad_shapes(account):
+    note = _call(account, "create_note", title="t", text="본문")["result"]["note"]
+    for bad in ["문자열", 42, None, [123], [""], [None]]:
+        res = _call(account, "set_note_labels", id=note["id"], label_ids=bad)
+        assert res["error"]["code"] == "BAD_REQUEST", f"{bad!r} 이 통과했다"
+
+
+def test_set_note_labels_tolerates_duplicates(account):
+    """체크박스 화면이 실수로 만들 수 있는 모양이고, 뜻이 모호하지 않다."""
+    note = _call(account, "create_note", title="t", text="본문")["result"]["note"]
+    work = _make_label(account, "업무")
+    res = _call(account, "set_note_labels", id=note["id"],
+                label_ids=[work["id"], work["id"]])["result"]
+    assert [item["id"] for item in res["note"]["labels"]] == [work["id"]]
+
+
+def test_rename_label_updates_it_everywhere(account):
+    """**이름이 아니라 id 로 다루는 이유가 이것이다.** 이름을 바꿔도 붙어 있던
+    메모의 분류가 그대로 따라와야 한다."""
+    note = _call(account, "create_note", title="t", text="본문")["result"]["note"]
+    label = _make_label(account, "업무")
+    _call(account, "set_note_labels", id=note["id"], label_ids=[label["id"]])
+
+    renamed = _call(account, "rename_label", id=label["id"], name="회사")["result"]["label"]
+    assert renamed["id"] == label["id"], "id 는 그대로다"
+    assert renamed["name"] == "회사"
+
+    after = _call(account, "list_notes")["result"]["notes"][0]
+    assert [item["name"] for item in after["labels"]] == ["회사"]
+
+
+def test_rename_label_rejects_a_name_another_label_already_has(account):
+    a = _make_label(account, "업무")
+    _make_label(account, "개인")
+    res = _call(account, "rename_label", id=a["id"], name="개인")
+    assert res["error"]["code"] == "BAD_REQUEST"
+
+
+def test_rename_label_allows_changing_only_the_case_of_its_own_name(account):
+    """자기 자신과 부딪히는 것은 막지 않는다 — 대소문자만 고치는 흔한 경우다."""
+    label = _make_label(account, "work")
+    res = _call(account, "rename_label", id=label["id"], name="Work")["result"]["label"]
+    assert res["name"] == "Work"
+
+
+def test_rename_unknown_label_is_not_found(account):
+    assert _call(account, "rename_label", id="tag.없는것", name="x")["error"]["code"] == "NOT_FOUND"
+
+
+def test_delete_label_removes_it_from_every_note(account):
+    """메모는 지워지지 않는다. 분류만 사라진다."""
+    a = _call(account, "create_note", title="1", text="x")["result"]["note"]
+    b = _call(account, "create_note", title="2", text="x")["result"]["note"]
+    label = _make_label(account, "업무")
+    _call(account, "set_note_labels", id=a["id"], label_ids=[label["id"]])
+    _call(account, "set_note_labels", id=b["id"], label_ids=[label["id"]])
+
+    assert _call(account, "delete_label", id=label["id"])["result"] == {"ok": True}
+
+    notes = _call(account, "list_notes")["result"]["notes"]
+    assert len(notes) == 2, "메모는 그대로 있다"
+    assert all(n["labels"] == [] for n in notes), "분류만 떨어진다"
+    assert _call(account, "list_labels")["result"]["labels"] == []
+
+
+def test_delete_unknown_label_is_not_found(account):
+    assert _call(account, "delete_label", id="tag.없는것")["error"]["code"] == "NOT_FOUND"
+
+
+def test_labels_are_sorted_by_name_on_a_note(account):
+    """대역의 all() 은 붙인 순서를 그대로 준다 — 직렬화가 이름순으로 다시 세운다."""
+    note = _call(account, "create_note", title="t", text="본문")["result"]["note"]
+    later = _make_label(account, "하하")
+    earlier = _make_label(account, "가가")
+    _call(account, "set_note_labels", id=note["id"], label_ids=[later["id"], earlier["id"]])
+
+    after = _call(account, "list_notes")["result"]["notes"][0]
+    assert [item["name"] for item in after["labels"]] == ["가가", "하하"]
+
+
+def test_failed_label_write_drops_the_local_session(account):
+    """라벨도 노드를 먼저 고치고 미는 경로다 — 실패한 쓰기가 남으면 안 된다."""
+    note = _call(account, "create_note", title="t", text="본문")["result"]["note"]
+    label = _make_label(account, "업무")
+    account._keep.sync_error = RuntimeError("network unreachable")
+
+    res = _call(account, "set_note_labels", id=note["id"], label_ids=[label["id"]])
+    assert res["error"]["code"] == "INTERNAL"
+    assert account._keep is None

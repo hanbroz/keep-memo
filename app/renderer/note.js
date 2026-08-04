@@ -87,6 +87,18 @@ const archiveButton = document.getElementById('archive')
 // 데이터 필드에 맞춰 둔다 — pinned 는 Keep 노트의 필드, alwaysOnTop 은
 // state.json 의 필드다. 둘 다 "pin" 으로 부르면 언젠가 하나를 다른 하나로 고친다.
 const pinnedButton = document.getElementById('pinned')
+const labelToggle = document.getElementById('labelToggle')
+const labelPanel = document.getElementById('labelPanel')
+const labelChecks = document.getElementById('labelChecks')
+const newNoteLabel = document.getElementById('newNoteLabel')
+
+// 계정의 라벨 전부와, 이 메모에 붙은 라벨 id 집합. 둘을 나눠 두는 이유는
+// 체크박스 목록이 "전부"를 그리고 그중 "붙은 것"만 켜야 하기 때문이다.
+let allLabels = []
+const noteLabelIds = new Set()
+// 저장 요청이 나가 있는 동안 새 클릭을 막는다. 색·보관과 같은 이유다 —
+// 연달아 누르면 응답이 뒤섞여 나중 것이 먼저 것에 덮인다.
+let labelsSaving = false
 const lookToggle = document.getElementById('lookToggle')
 const lookPanel = document.getElementById('lookPanel')
 const colorPicker = document.getElementById('colorPicker')
@@ -1317,6 +1329,136 @@ archiveButton.addEventListener('click', async () => {
   }
 })
 
+// --- 라벨 (Keep 의 '라벨' = 카테고리) ----------------------------------------
+//
+// 라벨은 노트의 필드가 아니라 계정에 따로 사는 개체다. 여기서는 **이 메모에
+// 붙였다 떼는 것**과 없는 라벨을 새로 만들어 바로 붙이는 것만 한다. 이름 바꾸기와
+// 지우기는 목록 창에 있다 — 그것들은 한 번에 모든 메모에 걸리는 일이라 메모 한
+// 장의 화면에서 할 일이 아니다.
+
+/** 체크박스 목록을 지금의 라벨로 다시 그린다. */
+function buildLabelChecks () {
+  labelChecks.textContent = ''
+  if (allLabels.length === 0) {
+    const hint = document.createElement('div')
+    hint.className = 'empty-hint'
+    hint.textContent = '라벨이 없습니다. 아래에서 만들어 붙일 수 있습니다.'
+    labelChecks.append(hint)
+    return
+  }
+  for (const label of allLabels) {
+    const row = document.createElement('label')
+    const check = document.createElement('input')
+    check.type = 'checkbox'
+    check.checked = noteLabelIds.has(label.id)
+    check.disabled = !loaded || labelsSaving
+    check.addEventListener('change', () => { toggleLabel(label, check) })
+
+    const name = document.createElement('span')
+    // 라벨 이름은 Keep 에서 온 외부 데이터다. textContent 로만 넣는다.
+    name.textContent = label.name
+
+    row.classList.toggle('locked', !loaded)
+    row.title = label.name
+    row.append(check, name)
+    labelChecks.append(row)
+  }
+}
+
+/** 계정의 라벨을 받아온다. 이 메모에 붙은 것과 별개로 목록 전체가 필요하다. */
+async function loadLabels () {
+  const res = await window.keepSticky.listLabels()
+  if (!res.ok) return
+  allLabels = Array.isArray(res.labels) ? res.labels : []
+  buildLabelChecks()
+}
+
+/**
+ * 붙였다 떼기. 사이드카에는 **최종 상태**를 통째로 보낸다(더하기가 아니다) —
+ * 같은 요청을 두 번 보내도 결과가 같아, 응답을 놓쳐도 화면이 꼬이지 않는다.
+ */
+async function toggleLabel (label, check) {
+  if (!loaded || labelsSaving) {
+    check.checked = noteLabelIds.has(label.id) // 되돌린다
+    return
+  }
+  labelsSaving = true
+  const next = new Set(noteLabelIds)
+  if (check.checked) next.add(label.id)
+  else next.delete(label.id)
+
+  status.textContent = check.checked ? '라벨 붙이는 중…' : '라벨 떼는 중…'
+  try {
+    const res = await window.keepSticky.setNoteLabels(noteId, [...next])
+    if (!res.ok) {
+      check.checked = noteLabelIds.has(label.id)
+      status.textContent = res.code === 'AUTH_REQUIRED'
+        ? '재로그인이 필요합니다'
+        : `라벨을 바꾸지 못했습니다: ${res.message}`
+      return
+    }
+    // 사이드카가 확인해 준 최종 상태로 맞춘다(색·보관과 같은 관례다).
+    applyNoteLabels(res.note && res.note.labels)
+    status.textContent = check.checked ? '라벨을 붙였습니다' : '라벨을 뗐습니다'
+  } catch (err) {
+    check.checked = noteLabelIds.has(label.id)
+    status.textContent = err && err.message ? `라벨을 바꾸지 못했습니다: ${err.message}` : '라벨을 바꾸지 못했습니다'
+  } finally {
+    labelsSaving = false
+    buildLabelChecks()
+  }
+}
+
+/** 서버가 준 이 메모의 라벨로 화면 상태를 맞춘다. */
+function applyNoteLabels (labels) {
+  noteLabelIds.clear()
+  for (const label of Array.isArray(labels) ? labels : []) noteLabelIds.add(label.id)
+}
+
+/** 새 라벨을 만들어 곧바로 이 메모에 붙인다. */
+async function addAndAttachLabel () {
+  const name = newNoteLabel.value.trim()
+  if (name === '' || !loaded || labelsSaving) return
+  const made = await window.keepSticky.createLabel(name)
+  if (!made.ok) {
+    status.textContent = `라벨을 만들지 못했습니다: ${made.message}`
+    return
+  }
+  newNoteLabel.value = ''
+  allLabels = [...allLabels, made.label].sort((a, b) => a.name.localeCompare(b.name))
+  labelsSaving = true
+  try {
+    const res = await window.keepSticky.setNoteLabels(noteId, [...noteLabelIds, made.label.id])
+    if (!res.ok) {
+      // 라벨은 만들어졌지만 붙이지는 못했다. 사실대로 알린다 — 목록 창의 필터에
+      // 이미 나타나므로 "실패했다"고만 하면 유령이 생긴 것처럼 보인다.
+      status.textContent = `'${made.label.name}' 을 만들었지만 붙이지 못했습니다: ${res.message}`
+      return
+    }
+    applyNoteLabels(res.note && res.note.labels)
+    status.textContent = `'${made.label.name}' 라벨을 붙였습니다`
+  } finally {
+    labelsSaving = false
+    buildLabelChecks()
+  }
+}
+
+labelToggle.addEventListener('click', () => {
+  labelPanel.classList.toggle('show')
+  if (labelPanel.classList.contains('show')) {
+    // 열 때마다 다시 읽는다. 목록 창에서 라벨을 만들거나 지웠을 수 있다.
+    loadLabels().catch(() => {})
+    newNoteLabel.focus()
+  }
+})
+document.getElementById('addNoteLabel').addEventListener('click', () => { addAndAttachLabel() })
+newNoteLabel.addEventListener('keydown', (e) => {
+  // 조합 중의 Enter 는 글자를 확정하는 것이지 "추가"가 아니다.
+  if (e.key !== 'Enter' || e.isComposing) return
+  e.preventDefault()
+  addAndAttachLabel()
+})
+
 // --- 고정 (Keep 의 '고정됨') --------------------------------------------------
 //
 // 보관과 완전히 같은 뼈대다 — Keep 노트의 필드라 update_note 로 나가고, 목록의
@@ -1534,6 +1676,11 @@ function setEditingEnabled (enabled) {
   // 지금 상태가 무엇인지조차 모르므로 토글이 무엇을 뒤집는지 알 수 없다.
   archiveButton.disabled = !enabled
   pinnedButton.disabled = !enabled
+  // 라벨도 Keep 으로 나간다. 패널 자체는 열 수 있게 두되(무엇이 붙어 있는지는
+  // 봐야 한다) 체크박스는 buildLabelChecks 가 loaded 를 보고 잠근다.
+  labelToggle.disabled = !enabled
+  newNoteLabel.disabled = !enabled
+  buildLabelChecks()
   // 폰에서 만든 진짜 List 노트에서는 줄의 종류를 바꿀 수 없다 — 모든 줄이
   // 항목이고 그래야만 한다.
   lineToggle.disabled = !enabled || isNativeList
@@ -1736,6 +1883,9 @@ window.keepSticky.noteId().then(async (id) => {
   showArchiveState(note.archived)
   // 고정도 마찬가지다. 폰에서 고정해 둔 메모를 열면 [고정] 이 눌린 채로 뜬다.
   showPinnedState(note.pinned)
+  // 이 메모에 붙은 라벨. 계정 전체의 라벨 목록은 [라벨] 패널을 열 때 받아온다 —
+  // 창이 뜰 때마다 받으면 안 여는 사람에게는 헛된 왕복이다.
+  applyNoteLabels(note.labels)
   bookmarkText = currentBookmarkText()
   // 여기가 편집이 열리는 유일한 지점이다. 색 변경([모양] 패널의 스와치)과
   // [삭제] 도 같이 열린다 — 둘 다 "이 메모를 실제로 받아왔다"를 전제로 한다.

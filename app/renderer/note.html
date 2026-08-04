@@ -201,6 +201,33 @@
     #lookPanel { display: none; padding: 2px 16px 10px; max-height: 55%;
                  overflow-y: auto; -webkit-app-region: no-drag; }
     #lookPanel.show { display: block; }
+    /* 라벨 패널. [모양] 패널과 같은 자리, 같은 규칙이다 — 본문을 완전히 덮지
+       않게 max-height 로 막고, 넘치면 그 안에서 스크롤한다. 라벨은 개수 제한이
+       없어서 이 상한이 특히 중요하다. */
+    #labelPanel { display: none; padding: 2px 16px 10px; max-height: 55%;
+                  overflow-y: auto; -webkit-app-region: no-drag; }
+    #labelPanel.show { display: block; }
+    #labelChecks { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }
+    /* 이름이 길어도 줄바꿈되지 않고 잘린다 — 좁은 포스트잇에서 한 줄 한 라벨. */
+    #labelChecks label {
+      display: flex; align-items: center; gap: 7px; cursor: pointer;
+      font-size: var(--fs-xs); line-height: 1.6;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    #labelChecks input { flex: none; margin: 0; cursor: pointer; }
+    #labelChecks label.locked { cursor: default; opacity: 0.5; }
+    #labelPanel .empty-hint { color: var(--ink-dim); font-size: var(--fs-xs); line-height: 1.6; }
+    #newNoteLabel {
+      flex: 1; min-width: 0;
+      font-family: inherit; font-size: var(--fs-xs); line-height: 1.4;
+      padding: 4px 7px; border: 1px solid rgba(0, 0, 0, 0.22); border-radius: 5px;
+      background: rgba(255, 255, 255, 0.7); color: var(--ink);
+    }
+    #addNoteLabel {
+      flex: none; font-size: var(--fs-xs); padding: 4px 9px;
+      border: 1px solid rgba(0, 0, 0, 0.22); border-radius: 5px;
+      background: rgba(255, 255, 255, 0.7); color: var(--ink); cursor: pointer;
+    }
     #colorPicker { display: flex; flex-wrap: wrap; gap: 7px; }
     #colorPicker button.swatch {
       width: 20px; height: 20px; padding: 0; border-radius: 50%; cursor: pointer;
@@ -254,7 +281,7 @@
        body 규칙에서 그대로 온다. 눌러서 펼쳐야 하므로 드래그 영역이 아니다. */
     #bookmark { display: none; }
     body.folded #bar, body.folded #badge, body.folded #title, body.folded #body,
-    body.folded #lookPanel { display: none; }
+    body.folded #lookPanel, body.folded #labelPanel { display: none; }
     body.folded #bookmark {
       -webkit-app-region: no-drag;
       display: flex; flex: 1; justify-content: center;
@@ -307,6 +334,11 @@
          이것은 Keep 노트의 필드라 폰과 웹에도 그대로 간다. -->
     <button id="pinned" title="Keep 에서 고정하기 (목록 맨 위로)" aria-pressed="false" disabled>고정</button>
     <button id="archive" title="이 메모를 보관 처리하기" aria-pressed="false" disabled>보관</button>
+    <!-- 라벨(카테고리). 개수가 정해져 있지 않아 단추 하나로는 안 되고 패널이
+         필요하다. 라벨 자체를 만들고 지우는 관리는 목록 창에 있다 — 라벨은
+         계정에 사는 개체라 메모 한 장의 일이 아니다. 여기서는 이 메모에
+         붙였다 떼는 것과, 없는 라벨을 새로 만들어 바로 붙이는 것만 한다. -->
+    <button id="labelToggle" title="이 메모의 라벨(카테고리)" disabled>라벨</button>
     <button id="lookToggle" title="이 메모의 색과 서체" disabled>모양</button>
     <button id="delete" title="이 메모를 Keep 휴지통으로 보내기 (7일간 복구할 수 있습니다)" disabled>삭제</button>
     <span id="status"></span>
@@ -327,6 +359,14 @@
        서체는 이 메모 한 장에만 적용되고 Keep 에는 저장되지 않는다(Keep 에 서체
        필드가 없다). 비워 두면 그 항목은 목록 창 [설정] 의 공통 값을 따른다 —
        공통 값이 바뀌면 곧바로 같이 바뀐다. -->
+  <div id="labelPanel">
+    <div id="labelChecks" role="group" aria-label="이 메모의 라벨"></div>
+    <div class="look-row">
+      <input id="newNoteLabel" type="text" placeholder="새 라벨 만들어 붙이기"
+             aria-label="새 라벨 만들어 붙이기" autocomplete="off" spellcheck="false" maxlength="50">
+      <button id="addNoteLabel" type="button">추가</button>
+    </div>
+  </div>
   <div id="lookPanel">
     <div id="colorPicker" role="group" aria-label="노트 색상"></div>
     <div class="look-row">

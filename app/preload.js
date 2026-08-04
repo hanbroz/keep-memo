@@ -5,6 +5,15 @@ const { contextBridge, ipcRenderer } = require('electron')
 // Phase 3 에서 리치 텍스트를 다루게 되므로, Node API 경로를 처음부터 막는다.
 contextBridge.exposeInMainWorld('keepSticky', {
   listNotes: () => ipcRenderer.invoke('notes:list'),
+  // Keep 의 라벨(= 카테고리). 노트의 필드가 아니라 계정에 따로 사는 개체라
+  // 자기 통로를 갖는다. 언제나 id 로 다룬다 — 이름은 사용자가 바꿀 수 있어서
+  // 이름을 열쇠로 쓰면 이름을 바꾼 순간 그 라벨이 붙은 메모를 전부 놓친다.
+  // setNoteLabels 는 더하기가 아니라 **최종 상태로 갈아 끼우기**다.
+  listLabels: () => ipcRenderer.invoke('labels:list'),
+  createLabel: (name) => ipcRenderer.invoke('labels:create', name),
+  renameLabel: (id, name) => ipcRenderer.invoke('labels:rename', id, name),
+  deleteLabel: (id) => ipcRenderer.invoke('labels:delete', id),
+  setNoteLabels: (id, labelIds) => ipcRenderer.invoke('labels:setForNote', id, labelIds),
   // 목록 창의 [동기화]. 사이드카에서 keep.sync() 를 먼저 부른 뒤 다시 읽은
   // 목록을 { ok, notes } 로 돌려준다(실패하면 { ok:false, message, code }).
   // list_notes 와 달리 다른 기기에서 생긴 변경(특히 삭제)까지 반영한다.

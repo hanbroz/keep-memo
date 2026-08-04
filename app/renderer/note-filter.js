@@ -41,14 +41,42 @@ function noteMatchesQuery (note, normalizedQuery) {
  * 순서는 건드리지 않는다. 정렬은 사이드카 한 곳에서만 정한다 — 여기서 또 줄을
  * 세우면 두 벌이 언젠가 갈라진다.
  *
+ * 라벨 필터와 검색은 **AND** 다. 라벨로 좁힌 뒤 그 안에서 다시 검색하는 것이
+ * "카테고리 안에서 찾기"라는 자연스러운 뜻이다.
+ *
  * @param {Array} notes 전체 노트
  * @param {string} query 입력칸의 원본 문자열
+ * @param {string} [labelFilter] 라벨 id, LABEL_FILTER_NONE, 또는 ''(전체)
  */
-function filterNotes (notes, query) {
+function filterNotes (notes, query, labelFilter = '') {
   if (!Array.isArray(notes)) return []
   const q = normalizeSearchQuery(query)
-  if (q === '') return notes.slice()
-  return notes.filter((note) => noteMatchesQuery(note, q))
+  const byLabel = typeof labelFilter === 'string' && labelFilter !== ''
+  if (q === '' && !byLabel) return notes.slice()
+  return notes.filter((note) => {
+    if (byLabel && !noteHasLabel(note, labelFilter)) return false
+    return noteMatchesQuery(note, q)
+  })
+}
+
+// '라벨 없음'을 고른 상태. <select> 의 value 로 오가야 하므로 문자열이어야 하고,
+// 진짜 라벨 id 와 부딪히면 안 된다 — Keep 의 라벨 id 는 'tag.' 로 시작하므로
+// (예: tag.db0u9qguemcy.19f) 이 값이 그것과 같아질 일은 없다.
+const LABEL_FILTER_NONE = 'none:라벨없음'
+
+/**
+ * 이 노트가 고른 라벨에 걸리는가.
+ *
+ * 이름이 아니라 **id** 로 견준다. 이름은 사용자가 언제든 바꿀 수 있어서, 이름을
+ * 열쇠로 쓰면 이름을 바꾼 순간 그 라벨이 붙은 메모를 전부 놓친다.
+ *
+ * labels 가 없는 응답(옛 사이드카)은 라벨이 하나도 없는 것으로 본다 — 그러면
+ * '라벨 없음' 에는 걸리고 특정 라벨에는 안 걸린다. 둘 다 맞는 해석이다.
+ */
+function noteHasLabel (note, labelFilter) {
+  const labels = note && Array.isArray(note.labels) ? note.labels : []
+  if (labelFilter === LABEL_FILTER_NONE) return labels.length === 0
+  return labels.some((label) => label && label.id === labelFilter)
 }
 
 /**
@@ -86,5 +114,8 @@ function selectionToApply (allNotes, checkedIds) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { normalizeSearchQuery, noteMatchesQuery, filterNotes, selectionToApply }
+  module.exports = {
+    normalizeSearchQuery, noteMatchesQuery, filterNotes, selectionToApply,
+    noteHasLabel, LABEL_FILTER_NONE
+  }
 }
