@@ -4,21 +4,31 @@
  *
  *   node scripts/make-tray-icon.js
  *
+ * 픽셀은 저장소의 앱 아이콘(google-keep-electron.ico)에서 온다. exe 아이콘과
+ * 트레이 아이콘이 **같은 원본 한 장**을 보게 하는 것이 요점이다 — 예전에는
+ * 이 스크립트가 포스트잇을 직접 그렸고, 그래서 앱 아이콘을 바꿔도 트레이만
+ * 옛 그림으로 남았다.
+ *
  * 왜 이런 방식인가:
  *
  *  1. 이 앱은 네트워크에서 아이콘을 받아오지 않는다. 아이콘 하나 때문에
- *     오프라인에서 트레이가 비면 앱에 닿을 길이 사라진다. 그래서 픽셀을
- *     여기서 직접 그리고 PNG 로 인코딩한다 — 외부 이미지 라이브러리도,
- *     내려받는 에셋도 없다(node:zlib 만 쓴다).
+ *     오프라인에서 트레이가 비면 앱에 닿을 길이 사라진다. 원본은 저장소에
+ *     같이 있는 파일이고, 읽고 다시 인코딩하는 데 node:zlib 말고는 아무것도
+ *     쓰지 않는다 — 외부 이미지 라이브러리도, 내려받는 에셋도 없다.
  *  2. 결과물은 .png 파일이 아니라 base64 문자열을 담은 .js 모듈이다.
  *     배포본은 app/ 전체가 app.asar 로 묶이는데, asar 안의 경로를 이미지
  *     로더가 못 읽는 경우가 있다. 그러면 아이콘이 비고, "창이 없어도 앱이
  *     살아 있다"의 유일한 근거가 사라진다. 문자열은 asar 여부와 무관하다.
+ *     .ico 를 런타임에 읽지 않고 여기서 미리 굽는 이유가 그것이다.
  *  3. 생성 코드를 저장소에 남겨 두는 이유: base64 덩어리만 있으면 아무도
  *     그 안에 뭐가 들었는지 확인하거나 고칠 수 없다.
  *
- * 그림은 단순하다 — 모서리가 둥근 노란 포스트잇에 글줄 세 개. 16px 로
- * 줄어들어도 "메모"로 읽히는 것이 유일한 목표다.
+ * **다시 인코딩하는 이유**: .ico 안의 32x32 PNG 를 그대로 꺼내 쓰면 안 된다.
+ * 그쪽은 IDAT 이 여러 조각이고 행 필터도 0 이 아닌데, app/test/tray-icon.test.js
+ * 는 IHDR → IDAT → IEND 단일 IDAT 에 모든 행 필터 0 을 요구한다. 그 검사가
+ * 까다로워서가 아니라, 그래야 Electron 없이 바이트만 보고 "이 아이콘이 진짜
+ * 그려지는 그림인지"를 확인할 수 있기 때문이다. 그래서 픽셀만 꺼내
+ * (decodePng) 아래 인코더로 다시 굽는다.
  */
 const fs = require('node:fs')
 const path = require('node:path')
@@ -26,6 +36,7 @@ const zlib = require('node:zlib')
 
 const ROOT = path.resolve(__dirname, '..')
 const OUT = path.join(ROOT, 'app', 'tray-icon.js')
+const SOURCE_ICON = path.join(ROOT, 'google-keep-electron.ico')
 
 // Windows 트레이는 논리 16x16 에 DPI 배율을 곱한 크기를 쓴다(125% → 20px,
 // 150% → 24px, 200% → 32px). 32x32 하나만 두고 축소하게 하면 모든 배율을
@@ -33,47 +44,111 @@ const OUT = path.join(ROOT, 'app', 'tray-icon.js')
 const W = 32
 const H = 32
 
-const BORDER = [58, 46, 16, 255]   // 밝은 작업 표시줄에서도 형태가 남게 하는 진한 테두리
-const BODY = [250, 213, 78, 255]   // 포스트잇 노랑
-const LINE = [126, 101, 32, 255]   // 글줄
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
 
+// --- .ico 에서 픽셀 꺼내기 --------------------------------------------------
+
+/**
+ * .ico 에서 size x size 항목의 PNG 바이트를 꺼낸다.
+ *
+ * 못 찾거나 PNG 가 아니면 던진다. 조용히 다른 크기로 넘어가지 않는 것이
+ * 중요하다 — 트레이 아이콘이 흐릿해진 것을 눈으로 알아채기는 어렵고,
+ * 알아채더라도 원인이 여기라고 짐작하기는 더 어렵다.
+ */
+function extractIcoPng (icoBuf, size) {
+  if (icoBuf.readUInt16LE(0) !== 0 || icoBuf.readUInt16LE(2) !== 1) {
+    throw new Error(`${SOURCE_ICON} 가 .ico 가 아니다`)
+  }
+  const count = icoBuf.readUInt16LE(4)
+  const found = []
+  for (let i = 0; i < count; i++) {
+    const off = 6 + i * 16
+    // .ico 에서 0 은 256 을 뜻한다(한 바이트에 256 이 안 들어가서).
+    const w = icoBuf[off] || 256
+    const h = icoBuf[off + 1] || 256
+    found.push(`${w}x${h}`)
+    if (w !== size || h !== size) continue
+    const bytes = icoBuf.readUInt32LE(off + 8)
+    const at = icoBuf.readUInt32LE(off + 12)
+    const entry = icoBuf.subarray(at, at + bytes)
+    if (!entry.subarray(0, 8).equals(PNG_SIGNATURE)) {
+      // BMP 로 들어 있는 .ico 도 있다. 이 프로젝트의 아이콘은 전부 PNG 라
+      // 디코더를 하나만 둔다 — 언젠가 BMP 원본이 들어오면 여기서 막힌다.
+      throw new Error(`${size}x${size} 항목이 PNG 가 아니다(BMP 로 보인다). PNG 로 다시 내보낼 것`)
+    }
+    return entry
+  }
+  throw new Error(`${size}x${size} 항목이 없다. 들어 있는 크기: ${found.join(', ')}`)
+}
+
+/**
+ * 최소 PNG 디코더. 8비트 RGBA(컬러 타입 6), 인터레이스 없음만 읽는다.
+ * 필터는 다섯 종류를 모두 되돌린다 — 원본을 어떤 도구로 내보냈는지에 따라
+ * 무엇이 쓰였는지 알 수 없고, 못 되돌리면 그림이 조용히 뭉개진다.
+ */
+function decodePng (png) {
+  const idat = []
+  let ihdr = null
+  let off = PNG_SIGNATURE.length
+  while (off < png.length) {
+    const length = png.readUInt32BE(off)
+    const type = png.subarray(off + 4, off + 8).toString('ascii')
+    const data = png.subarray(off + 8, off + 8 + length)
+    if (type === 'IHDR') ihdr = data
+    else if (type === 'IDAT') idat.push(data)
+    off += 12 + length
+  }
+  if (!ihdr) throw new Error('IHDR 이 없다')
+
+  const width = ihdr.readUInt32BE(0)
+  const height = ihdr.readUInt32BE(4)
+  if (ihdr[8] !== 8) throw new Error(`비트 깊이가 8 이 아니다 (${ihdr[8]})`)
+  if (ihdr[9] !== 6) throw new Error(`컬러 타입이 6(RGBA)이 아니다 (${ihdr[9]})`)
+  if (ihdr[12] !== 0) throw new Error('인터레이스된 PNG 는 읽지 않는다')
+
+  const raw = zlib.inflateSync(Buffer.concat(idat))
+  const stride = width * 4
+  if (raw.length !== height * (stride + 1)) {
+    throw new Error(`풀린 크기가 맞지 않는다: ${raw.length} != ${height * (stride + 1)}`)
+  }
+
+  // Paeth 예측자(PNG 명세 그대로).
+  const paeth = (a, b, c) => {
+    const p = a + b - c
+    const pa = Math.abs(p - a)
+    const pb = Math.abs(p - b)
+    const pc = Math.abs(p - c)
+    return (pa <= pb && pa <= pc) ? a : (pb <= pc ? b : c)
+  }
+
+  const px = Buffer.alloc(height * stride)
+  for (let y = 0; y < height; y++) {
+    const filter = raw[y * (stride + 1)]
+    const line = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1))
+    for (let i = 0; i < stride; i++) {
+      // a = 왼쪽 픽셀, b = 위 픽셀, c = 왼쪽 위 픽셀. 가장자리는 0 으로 친다.
+      const a = i >= 4 ? px[y * stride + i - 4] : 0
+      const b = y > 0 ? px[(y - 1) * stride + i] : 0
+      const c = (i >= 4 && y > 0) ? px[(y - 1) * stride + i - 4] : 0
+      let v = line[i]
+      if (filter === 1) v += a
+      else if (filter === 2) v += b
+      else if (filter === 3) v += (a + b) >> 1
+      else if (filter === 4) v += paeth(a, b, c)
+      else if (filter !== 0) throw new Error(`${y}행의 필터 타입 ${filter} 을 모른다`)
+      px[y * stride + i] = v & 0xff
+    }
+  }
+  return { width, height, pixels: px }
+}
+
+/** 앱 아이콘에서 트레이용 32x32 RGBA 픽셀을 꺼낸다. */
 function makePixels () {
-  const px = Buffer.alloc(W * H * 4, 0) // 기본값 0 = 완전 투명
-  const set = (x, y, [r, g, b, a]) => {
-    if (x < 0 || y < 0 || x >= W || y >= H) return
-    const i = (y * W + x) * 4
-    px[i] = r; px[i + 1] = g; px[i + 2] = b; px[i + 3] = a
+  const decoded = decodePng(extractIcoPng(fs.readFileSync(SOURCE_ICON), W))
+  if (decoded.width !== W || decoded.height !== H) {
+    throw new Error(`${W}x${H} 를 기대했는데 ${decoded.width}x${decoded.height} 이 나왔다`)
   }
-
-  // 모서리가 둥근 사각형 안쪽인지. 모서리 반지름 r 의 중심으로 스냅한 뒤
-  // 거리를 재는 방식이라 네 모서리를 따로 다루지 않아도 된다.
-  const inRounded = (x, y, x0, y0, x1, y1, r) => {
-    if (x < x0 || x > x1 || y < y0 || y > y1) return false
-    const cx = x < x0 + r ? x0 + r : (x > x1 - r ? x1 - r : x)
-    const cy = y < y0 + r ? y0 + r : (y > y1 - r ? y1 - r : y)
-    const dx = x - cx
-    const dy = y - cy
-    return dx * dx + dy * dy <= r * r
-  }
-
-  const x0 = 3, y0 = 3, x1 = 28, y1 = 28
-  const t = 2 // 테두리 두께
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      if (!inRounded(x, y, x0, y0, x1, y1, 4)) continue
-      const inside = inRounded(x, y, x0 + t, y0 + t, x1 - t, y1 - t, 2)
-      set(x, y, inside ? BODY : BORDER)
-    }
-  }
-
-  // 글줄 세 개. 32px 에서 2px 두께라 16px 로 줄어도 1px 로 남는다.
-  const rows = [[11, 9, 22], [16, 9, 22], [21, 9, 18]]
-  for (const [y, from, to] of rows) {
-    for (let dy = 0; dy < 2; dy++) {
-      for (let x = from; x <= to; x++) set(x, y + dy, LINE)
-    }
-  }
-  return px
+  return decoded.pixels
 }
 
 // --- 최소 PNG 인코더 ------------------------------------------------------
@@ -129,15 +204,25 @@ function encodePng (pixels, width, height) {
   ])
 }
 
+/**
+ * 원본 .ico 에서 트레이용 PNG 바이트를 굽는다. main() 과 테스트가 같이 쓴다 —
+ * 테스트가 이 함수를 다시 돌려 app/tray-icon.js 에 박힌 바이트와 견주므로,
+ * 아이콘만 바꾸고 이 스크립트를 안 돌린 날이 그 자리에서 드러난다.
+ */
+function buildTrayIconPng () {
+  return encodePng(makePixels(), W, H)
+}
+
 function main () {
-  const png = encodePng(makePixels(), W, H)
+  const png = buildTrayIconPng()
   const b64 = png.toString('base64')
 
   const source = `'use strict'
 /**
  * 트레이 아이콘 (${W}x${H} RGBA PNG, base64).
  *
- * 이 파일은 생성물이다. 손으로 고치지 말고 다시 만들 것:
+ * 이 파일은 생성물이다. 손으로 고치지 말고, 원본인 google-keep-electron.ico
+ * (exe 아이콘과 같은 파일이다) 를 바꾼 뒤 다시 만들 것:
  *
  *   node scripts/make-tray-icon.js
  *
@@ -162,8 +247,14 @@ function trayIconPngBuffer () {
 module.exports = { TRAY_ICON_PNG_BASE64, TRAY_ICON_DATA_URL, trayIconPngBuffer }
 `
   fs.writeFileSync(OUT, source, 'utf8')
+  console.log(`[tray-icon] 원본: ${path.relative(ROOT, SOURCE_ICON)} 의 ${W}x${H} 항목`)
   console.log(`[tray-icon] ${W}x${H} PNG ${png.length} bytes → base64 ${b64.length} chars`)
   console.log(`[tray-icon] 기록: ${path.relative(ROOT, OUT)}`)
 }
 
-main()
+// 직접 실행할 때만 파일을 쓴다. require 로 불러오는 쪽(테스트)은 굽기만 하고
+// app/tray-icon.js 는 건드리지 않아야 한다 — 검사가 대상을 고쳐 버리면
+// 무엇을 검사한 것인지 알 수 없다.
+if (require.main === module) main()
+
+module.exports = { buildTrayIconPng, extractIcoPng, decodePng, encodePng, W, H }

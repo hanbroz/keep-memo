@@ -113,6 +113,22 @@ test('data URL 이 base64 문자열과 짝이 맞는다', () => {
   assert.strictEqual(trayIconPngBuffer().toString('base64'), TRAY_ICON_PNG_BASE64)
 })
 
+test('앱 아이콘(.ico)과 트레이 아이콘이 갈라지지 않았다', () => {
+  // 트레이 아이콘은 google-keep-electron.ico 에서 구운 것이고, 그 .ico 는
+  // exe 아이콘이기도 하다(package.json 의 build.win.icon). 아이콘만 바꾸고
+  // `node scripts/make-tray-icon.js` 를 안 돌리면 exe 는 새 아이콘, 트레이는
+  // 옛 아이콘이 되어 갈라진다 — 눈으로는 알아채기 어렵고 원인을 짚기는 더
+  // 어렵다. 여기서 다시 구워 바이트가 같은지 본다.
+  //
+  // 이 require 는 파일을 쓰지 않는다(make-tray-icon.js 는 require.main 일
+  // 때만 main() 을 부른다).
+  const { buildTrayIconPng } = require('../../scripts/make-tray-icon')
+  assert.deepStrictEqual(
+    buildTrayIconPng(), trayIconPngBuffer(),
+    'app/tray-icon.js 가 google-keep-electron.ico 와 다르다 — node scripts/make-tray-icon.js 를 돌릴 것'
+  )
+})
+
 test('Electron 없이도 require 된다', () => {
   // 아이콘이 파일이 아니라 소스에 있는 덕에 테스트가 Electron 을 띄우지 않고도
   // 검사할 수 있다. 배포본의 asar 안에서도 같은 이유로 항상 읽힌다.
