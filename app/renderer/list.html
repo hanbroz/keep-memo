@@ -105,6 +105,14 @@
     /* 목록의 노트 제목은 이 창에서 '제목'이 아니라 본문 항목이다 — 그래서
        --fs-title 이 아니라 --fs-body 를 따른다(body 에서 물려받는다). */
     .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* 보관 표. 보관된 메모는 목록에서 감추지 않고 맨 위 묶음으로 올라오므로
+       (사이드카가 정렬한다), 그 행이 왜 위에 있는지를 이 표가 말해 준다.
+       행 배경은 메모 색이 차지하고 있어 흐리게 하는 대신 표를 붙인다. */
+    .tag {
+      flex: none; padding: 1px 7px; border-radius: 999px;
+      background: rgba(0, 0, 0, 0.11); color: var(--ink-dim);
+      font-size: var(--fs-body); line-height: var(--lh-tight); white-space: nowrap;
+    }
     /* 날짜도 같은 본문 크기를 쓰고, 위계는 색(--ink-dim)으로만 준다. */
     .date { flex: none; padding-right: 10px; color: var(--ink-dim); font-size: var(--fs-body); }
     .empty { padding: 24px 10px; color: var(--ink-dim); font-size: var(--fs-body); }

@@ -42,6 +42,15 @@ contextBridge.exposeInMainWorld('keepSticky', {
   // 포스트잇 ↔ 책갈피. 좌표 계산과 저장은 전부 main 프로세스가 한다.
   foldNote: (id) => ipcRenderer.invoke('notes:fold', id),
   unfoldNote: (id) => ipcRenderer.invoke('notes:unfold', id),
+  // 책갈피를 끌어 옮긴다. x/y 는 **창의 왼쪽 위가 가야 할 화면 좌표**다 —
+  // 잡은 지점이 창 안 어디였는지는 렌더러가 빼고 보낸다. move 는 화면만
+  // 움직이고, drop 이 가까운 가장자리에 붙이고 state.json 에 적는다.
+  moveBookmark: (id, x, y) => ipcRenderer.invoke('notes:bookmarkMove', id, x, y),
+  dropBookmark: (id, x, y) => ipcRenderer.invoke('notes:bookmarkDrop', id, x, y),
+  // 압정(📌). 이 메모를 모든 창 위에 띄울지. 저장은 main 이 하고 실제로
+  // 저장된 값을 돌려준다 — 렌더러는 돌아온 값으로 단추를 그린다.
+  getAlwaysOnTop: (id) => ipcRenderer.invoke('notes:getAlwaysOnTop', id),
+  setAlwaysOnTop: (id, on) => ipcRenderer.invoke('notes:setAlwaysOnTop', id, on),
   // main 이 접힘 상태를 알려준다. 재시작 복원처럼 렌더러가 스스로 알 수 없는
   // 경로가 있으므로 창이 뜬 직후에도 한 번 온다. 이벤트 객체는 넘기지 않는다.
   onFoldState: (cb) => ipcRenderer.on('notes:foldState', (_e, folded) => cb(!!folded)),

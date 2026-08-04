@@ -123,3 +123,34 @@ test('Electron 없이도 require 된다', () => {
   assert.strictEqual(typeof selectionToApply, 'function')
   assert.ok(!Object.keys(require.cache).some((p) => /[\\/]electron[\\/]/.test(p)))
 })
+// --- 보관 처리 ---------------------------------------------------------------
+//
+// 보관된 메모는 목록에서 **감추지 않는다.** 감추면 이 앱에서 보관을 해제할 길이
+// 사라진다 — 목록에 없는 메모는 열 수도 없기 때문이다. 위로 모아 두는 일(정렬)은
+// 사이드카가 하고, 여기서는 검색이 보관 여부와 무관하게 걸리는지만 본다.
+
+const MIXED = [
+  { id: 'b', title: '지난 회의', text: '분기 계획', created: '2026-08-02', archived: true },
+  { id: 'd', title: '옛 장부', text: '보관함 안', created: '2026-08-04', archived: true },
+  { id: 'a', title: '장보기', text: '우유', created: '2026-08-01' },
+  { id: 'c', title: '장롱', text: '정리', created: '2026-08-03', archived: false }
+]
+
+test('보관된 메모도 목록에서 빠지지 않는다', () => {
+  // 빠지면 해제할 방법이 없어진다. 이 한 줄이 그 함정을 막는다.
+  assert.deepStrictEqual(ids(filterNotes(MIXED, '')), ['b', 'd', 'a', 'c'])
+})
+
+test('사이드카가 준 순서를 그대로 지킨다 — 여기서 다시 줄 세우지 않는다', () => {
+  // 정렬이 두 벌이 되면 언젠가 갈라진다. 거르기만 하고 순서는 건드리지 않는다.
+  assert.deepStrictEqual(ids(filterNotes(MIXED, '장')), ['d', 'a', 'c'])
+})
+
+test('검색은 보관 여부와 무관하게 걸린다', () => {
+  assert.deepStrictEqual(ids(filterNotes(MIXED, '분기')), ['b'], '보관된 것도 검색된다')
+  assert.deepStrictEqual(ids(filterNotes(MIXED, '우유')), ['a'])
+})
+
+test('archived 필드가 없는 응답(옛 사이드카)도 그대로 다 나온다', () => {
+  assert.deepStrictEqual(ids(filterNotes(NOTES, '')), ['n1', 'n2', 'n3', 'n4'])
+})

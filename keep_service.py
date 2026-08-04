@@ -89,12 +89,47 @@ def _serialize(node) -> dict:
         "color": node.color.name,
         "pinned": bool(node.pinned),
         "archived": bool(node.archived),
+        # created 는 목록의 정렬 기준이자 화면에 보이는 날짜다. updated 를
+        # 기준으로 삼으면 오래된 메모를 한 글자만 고쳐도 맨 위로 튀어 올라와,
+        # 목록의 순서가 "언제 쓴 글인가"가 아니라 "마지막으로 건드린 때"가 된다.
+        # updated 도 계속 실어 보낸다 — 동기화 판단에 쓰이고, 옛 화면과의
+        # 호환도 여기서 끊지 않는다.
+        "created": node.timestamps.created.isoformat(),
         "updated": node.timestamps.updated.isoformat(),
         "kind": "list" if _is_checklist(node) else "note",
     }
     if data["kind"] == "list":
         data["items"] = _serialize_items(node)
     return data
+
+
+def _serialize_for_list(nodes) -> list:
+    """목록 창에 보낼 노트들을 직렬화하고 화면에 나갈 순서로 정렬한다.
+
+    **작성일(created) 내림차순이다** — 최근에 쓴 메모가 위로 온다. 예전에는
+    updated 를 기준으로 삼았는데, 그러면 몇 달 전 메모를 한 글자만 고쳐도 맨
+    위로 튀어 올라온다. 목록의 순서가 "언제 쓴 글인가"가 아니라 "마지막으로
+    건드린 때"가 되어, 사용자가 기억하는 위치에 메모가 없다.
+
+    list_notes 와 sync_notes 가 **반드시 같은 순서**를 줘야 한다 — [동기화] 를
+    눌렀다고 목록의 순서가 바뀌면 무엇이 기준인지 알 수 없다. 두 곳이 각자
+    정렬하면 언젠가 갈라지므로 이 함수 하나만 쓴다.
+
+    **보관 처리한 메모가 맨 위 묶음으로 온다.** 목록에서 감추지 않는 것이
+    핵심이다 — 감추면 이 앱에서 보관을 해제할 길이 사라진다. 대신 위로 모아
+    두어 "치워 둔 것들"이 한눈에 구분되게 한다.
+
+    두 기준을 한 번에 거는 방법이 tuple 키다. reverse=True 가 두 자리에 모두
+    걸리는데 마침 둘 다 내림차순을 원한다 — archived 는 True(보관됨)가 위로,
+    created 는 최신이 위로. 방향이 갈렸다면 이렇게 못 쓴다.
+
+    isoformat() 문자열을 그대로 비교하는 것은 안전하다. ISO 8601 은 같은 형식과
+    시간대라면 사전순이 곧 시간순이고, 여기 오는 값은 전부 같은 경로(gkeepapi 의
+    NodeTimestamps)에서 나온다.
+    """
+    notes = [_serialize(n) for n in nodes]
+    notes.sort(key=lambda n: (n["archived"], n["created"]), reverse=True)
+    return notes
 
 
 def _serialize_items(node) -> list:
@@ -197,9 +232,7 @@ class KeepService:
 
     def list_notes(self) -> dict:
         keep = self._require_keep()
-        notes = [_serialize(n) for n in keep.find()]
-        notes.sort(key=lambda n: n["updated"], reverse=True)
-        return {"notes": notes}
+        return {"notes": _serialize_for_list(keep.find())}
 
     def sync_notes(self) -> dict:
         """Keep 서버와 맞춘 뒤 최신 목록을 돌려준다. list_notes 와 응답 모양은 같다.
@@ -225,9 +258,7 @@ class KeepService:
         """
         keep = self._require_keep()
         keep.sync()
-        notes = [_serialize(n) for n in keep.find()]
-        notes.sort(key=lambda n: n["updated"], reverse=True)
-        return {"notes": notes}
+        return {"notes": _serialize_for_list(keep.find())}
 
     def create_note(self, title: str = "", text: str = "") -> dict:
         keep = self._require_keep()
@@ -291,7 +322,7 @@ class KeepService:
             "sentItems": sent_items,
         }
 
-    def update_note(self, id: str, title=None, text=None, color=None) -> dict:  # noqa: A002
+    def update_note(self, id: str, title=None, text=None, color=None, archived=None) -> dict:  # noqa: A002
         keep = self._require_keep()
         node = keep.get(id)
         if node is None:
@@ -318,12 +349,21 @@ class KeepService:
             except KeyError:
                 raise BadRequest(f"알 수 없는 색 이름: {color}")
 
+        # 보관은 참/거짓 딱 둘뿐이다. bool(archived) 로 슬쩍 변환하지 않는다 —
+        # 렌더러가 실수로 "false" 같은 문자열을 보내면 그것은 파이썬에서 참이라,
+        # 해제하려던 요청이 조용히 보관으로 뒤집힌다. 색 이름을 화이트리스트로
+        # 대조하는 것과 같은 이유다.
+        if archived is not None and not isinstance(archived, bool):
+            raise BadRequest(f"archived 는 true/false 여야 한다: {archived!r}")
+
         if title is not None:
             node.title = title
         if text is not None:
             node.text = text
         if color_value is not None:
             node.color = color_value
+        if archived is not None:
+            node.archived = archived
         sent_text = node.text or ""
 
         keep.sync()

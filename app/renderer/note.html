@@ -183,6 +183,16 @@
        max-height 로 본문을 완전히 덮지 않게 막는다. 패널이 열려 있어도 무슨
        메모인지 보여야 한다. */
     #lookToggle { font-size: var(--fs-xs); }
+    /* 압정은 컬러 이모지라 다른 단추처럼 color 로는 흐려지지 않는다. 꺼진
+       상태(항상 위 해제)는 opacity 로 표시한다. */
+    /* 이미 보관된 메모(보관함에서 열어 본 것)에서는 [보관] 이 눌린 상태로
+       보인다. 그 상태에서 누르면 해제다. */
+    #archive[aria-pressed="true"] {
+      background: rgba(47, 111, 235, 0.16); color: #1b4bb8; font-weight: 600;
+    }
+    #pin { font-size: 13px; }
+    #pin[aria-pressed="false"] { opacity: 0.35; }
+    #pin[aria-pressed="false"]:hover { opacity: 0.7; }
     #lookPanel { display: none; padding: 2px 16px 10px; max-height: 55%;
                  overflow-y: auto; -webkit-app-region: no-drag; }
     #lookPanel.show { display: block; }
@@ -244,9 +254,19 @@
       -webkit-app-region: no-drag;
       display: flex; flex: 1; justify-content: center;
       padding: 9px 2px; overflow: hidden; cursor: pointer;
-      box-shadow: inset 2px 0 0 rgba(0, 0, 0, 0.12);
+      /* 왼쪽의 굵은 선은 "여기가 잡는 곳"이라는 표시다. 위쪽 가는 선은 장과
+         장의 경계다 — 책갈피는 사이 간격 없이 딱 붙어 쌓이므로(bookmark-layout.js)
+         이 선이 없으면 같은 색 메모 두 장이 한 장으로 보인다. */
+      box-shadow: inset 2px 0 0 rgba(0, 0, 0, 0.12),
+                  inset 0 1px 0 rgba(0, 0, 0, 0.22);
     }
-    body.folded #bookmark:hover { box-shadow: inset 3px 0 0 rgba(0, 0, 0, 0.28); }
+    body.folded #bookmark:hover {
+      box-shadow: inset 3px 0 0 rgba(0, 0, 0, 0.28),
+                  inset 0 1px 0 rgba(0, 0, 0, 0.22);
+    }
+    /* 끄는 동안. 문턱(4px)을 넘긴 뒤에야 이 클래스가 붙으므로, 펼치려고 톡
+       누른 것은 계속 pointer 커서로 남는다. */
+    body.folded.dragging #bookmark { cursor: grabbing; }
     #bookmark-label {
       font-size: 14px; line-height: 1.32; text-align: center; color: var(--ink);
       font-weight: 600;
@@ -271,11 +291,22 @@
          바꾸지 않는다(되돌리기 어려운 버튼 옆에 자주 누르는 버튼을 새로 붙이지
          않는다). -->
     <button id="lineToggle" title="이 줄을 체크리스트 항목으로 만들기 / 되돌리기 (Ctrl+L)" disabled>체크</button>
+    <!-- [보관] 은 Keep 의 '보관처리'다. 지우는 것이 아니라 치워 두는 것이고,
+         누르면 이 포스트잇도 바탕화면에서 내려간다(Keep 메모는 그대로 남는다).
+         목록 창의 [보관함] 에서 다시 찾을 수 있다.
+         **[삭제] 옆에 두지 않는다.** 이 줄 위 주석의 원칙 그대로다 — 되돌리기
+         어려운 버튼 옆에 자주 누르는 버튼을 붙이지 않는다. 그래서 [모양] 이
+         [삭제] 의 왼쪽 이웃 자리를 그대로 지킨다. -->
+    <button id="archive" title="이 메모를 보관 처리하기" aria-pressed="false" disabled>보관</button>
     <button id="lookToggle" title="이 메모의 색과 서체" disabled>모양</button>
     <button id="delete" title="이 메모를 Keep 휴지통으로 보내기 (7일간 복구할 수 있습니다)" disabled>삭제</button>
     <span id="status"></span>
     <span id="spacer"></span>
-    <button id="fold" title="책갈피로 접기 (화면 오른쪽 가장자리에 붙습니다)">접기</button>
+    <!-- 압정. 오른쪽 묶음('이 창'에 하는 일)에 든다. 눌린 상태가 기본이다 —
+         이 단추가 생기기 전에는 모든 포스트잇이 예외 없이 항상 위에 떠 있었다. -->
+    <button id="pin" title="항상 위에 보이기 (끄면 다른 창 뒤로 갈 수 있습니다)"
+            aria-pressed="true">📌</button>
+    <button id="fold" title="책갈피로 접기 (화면 가장자리에 붙습니다)">접기</button>
     <button id="close" title="바탕화면에서 내리기 (Keep 메모는 유지됩니다)">✕</button>
   </div>
   <!-- [모양] 패널: 노트 색 + 이 메모만의 서체.

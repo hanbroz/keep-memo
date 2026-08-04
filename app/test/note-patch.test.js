@@ -113,3 +113,37 @@ test('객체가 아닌 체크리스트 patch 는 거절한다', () => {
     assert.strictEqual(res.ok, false, `${JSON.stringify(bad)} 는 거절돼야 한다`)
   }
 })
+
+// --- 보관 -------------------------------------------------------------------
+
+test('archived 는 통과시킨다 — 사이드카의 update_note 가 받는 필드다', () => {
+  assert.deepStrictEqual(validateNotePatch({ archived: true }), { ok: true, params: { archived: true } })
+  assert.deepStrictEqual(validateNotePatch({ archived: false }), { ok: true, params: { archived: false } })
+})
+
+test('archived 만 있는 patch 는 title/text 를 만들지 않는다', () => {
+  // main.js 가 이 사실로 conflictBackup 을 남길지 정한다 — 보관은 편집기
+  // 내용을 건드리지 않으므로 보관할 미저장 본문이 없다(색과 같다).
+  const res = validateNotePatch({ archived: true })
+  assert.strictEqual(res.params.title, undefined)
+  assert.strictEqual(res.params.text, undefined)
+})
+
+test('archived 와 다른 필드를 같이 보내도 된다', () => {
+  assert.deepStrictEqual(
+    validateNotePatch({ title: '제목', archived: true }),
+    { ok: true, params: { title: '제목', archived: true } }
+  )
+})
+
+test('archived 옆에 모르는 필드가 있으면 통째로 거절한다', () => {
+  const res = validateNotePatch({ archived: true, pinned: true })
+  assert.strictEqual(res.ok, false)
+  assert.match(res.message, /pinned/)
+})
+
+test('참/거짓이 아닌 archived 도 여기서는 통과한다 — 값 검사는 사이드카가 한다', () => {
+  // 이 함수는 "보낼 수 있는 키"의 화이트리스트다. 값의 형태를 판정하는 진짜
+  // 경계는 사이드카이고, 거기서 bool 이 아니면 BadRequest 로 거절한다.
+  assert.strictEqual(validateNotePatch({ archived: 'true' }).ok, true)
+})

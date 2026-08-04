@@ -12,7 +12,7 @@ const { Store } = require('./store')
 const { createLoginWindow, pollCookie } = require('./login')
 const { resolveSidecarCommand } = require('./sidecar-path')
 const { validateEmail } = require('./email-validate')
-const { bookmarkBounds, BOOKMARK } = require('./bookmark-layout')
+const { packBookmarks, bookmarkAnchorFromDrop, BOOKMARK } = require('./bookmark-layout')
 const { reconcileSelection } = require('./selection-reconcile')
 const { orphanedNoteIds } = require('./sync-reconcile')
 const { validateNotePatch, validateChecklistPatch } = require('./note-patch')
@@ -525,7 +525,10 @@ function createNoteWindow (noteId) {
     height: state.h,
     frame: false,
     transparent: false,
-    alwaysOnTop: true,
+    // 압정의 상태. 이 필드가 생기기 전에는 여기 true 가 박혀 있었고, 그래서
+    // 기본값도 true 다(store.js 의 DEFAULT_NOTE_STATE 주석 참고) — 옛 메모가
+    // 업데이트 한 번에 뒤로 가라앉지 않는다.
+    alwaysOnTop: state.alwaysOnTop !== false,
     skipTaskbar: true,
     webPreferences: { preload: PRELOAD, contextIsolation: true, nodeIntegration: false }
   })
@@ -614,18 +617,46 @@ function forgetFold (noteId) {
  * 때 모두 부른다 — 하나가 펼쳐지면 그 아래 것들이 빈자리를 메워야 한다.
  */
 function relayoutBookmarks () {
-  const usedSlots = new Map() // displayId -> 이미 채운 칸 수
   const displays = screen().getAllDisplays()
+  // 접은 뒤에 모니터를 뽑았을 수 있다. 그 경우 주 모니터로 데려온다 —
+  // 없는 화면에 붙여두면 사용자가 영영 못 찾는다.
+  const displayOf = (id) => displays.find((d) => d.id === id) || screen().getPrimaryDisplay()
+
+  // (모니터, 변) 단위로 나눈다. 자리를 한 장씩 정하지 않고 묶음째 정하는 것이
+  // 핵심이다 — 그래야 빈틈도 겹침도 생길 수 없다(bookmark-layout.js 참고).
+  // 왼쪽으로 옮긴 책갈피가 오른쪽 줄에 빈자리를 남기지 않는 것도 이 덕이다.
+  const groups = new Map()
   for (const entry of foldOrder) {
     const win = noteWindows.get(entry.id)
     if (!win || win.isDestroyed()) continue
-    const slot = usedSlots.get(entry.displayId) || 0
-    usedSlots.set(entry.displayId, slot + 1)
-    // 접은 뒤에 모니터를 뽑았을 수 있다. 그 경우 주 모니터로 데려온다 —
-    // 없는 화면에 붙여두면 사용자가 영영 못 찾는다.
-    const display = displays.find((d) => d.id === entry.displayId) || screen().getPrimaryDisplay()
-    win.setBounds(bookmarkBounds(display.workArea, slot, BOOKMARK))
+    const anchor = (store.getNote(entry.id) || {}).bookmark
+    const displayId = anchor ? anchor.displayId : entry.displayId
+    const side = anchor && anchor.side === 'left' ? 'left' : 'right'
+    const key = `${displayId}:${side}`
+    if (!groups.has(key)) groups.set(key, { displayId, side, members: [] })
+    // y 가 null 이면 "한 번도 안 옮겼다" — 그런 장은 줄 맨 뒤에 접힌 순서대로 선다.
+    groups.get(key).members.push({ id: entry.id, y: anchor ? anchor.y : null })
   }
+
+  let dirty = false
+  for (const group of groups.values()) {
+    const workArea = displayOf(group.displayId).workArea
+    for (const placed of packBookmarks(workArea, group.members, group.side, BOOKMARK)) {
+      const win = noteWindows.get(placed.id)
+      if (!win || win.isDestroyed()) continue
+      win.setBounds(placed.bounds)
+
+      // 실제로 놓인 자리를 앵커에도 적어 둔다. 저장된 y 는 "놓고 싶었던 자리"라
+      // 쌓고 나면 실제 자리와 몇십 px 씩 어긋나는데, 그대로 두면 다음 드래그의
+      // 정렬 기준이 화면에 보이는 것과 달라져 순서가 엉뚱하게 뒤집힌다.
+      const state = store.getNote(placed.id)
+      if (state && state.bookmark && state.bookmark.y !== placed.bounds.y) {
+        store.setNote(placed.id, { bookmark: { ...state.bookmark, y: placed.bounds.y } })
+        dirty = true
+      }
+    }
+  }
+  if (dirty) store.save()
 }
 
 /**
@@ -919,6 +950,71 @@ app.whenReady().then(async () => {
   ipcMain.handle('notes:fold', (_e, id) => ({ ok: foldNote(id) }))
   ipcMain.handle('notes:unfold', (_e, id) => ({ ok: unfoldNote(id) }))
 
+  // 압정. 저장은 언제나 main 이 하고 실제로 저장된 값을 돌려준다 —
+  // notes:setFont 와 같은 관례다. 렌더러는 자기가 보낸 값이 아니라 돌아온
+  // 값으로 단추를 그린다.
+  ipcMain.handle('notes:getAlwaysOnTop', (_e, id) => (store.getNote(id) || {}).alwaysOnTop !== false)
+  ipcMain.handle('notes:setAlwaysOnTop', (_e, id, on) => {
+    const next = !!on
+    const saved = store.setNote(id, { alwaysOnTop: next })
+    store.save()
+    const win = noteWindows.get(id)
+    // 창이 이미 사라진 뒤에 늦게 도착한 요청이어도 state.json 에는 남는다 —
+    // 다음에 그 메모를 띄울 때 createNoteWindow 가 이 값을 읽는다.
+    if (win && !win.isDestroyed()) win.setAlwaysOnTop(next)
+    return saved.alwaysOnTop !== false
+  })
+
+  // --- 책갈피 끌어 옮기기 ---------------------------------------------------
+  //
+  // 렌더러가 창의 왼쪽 위가 가야 할 화면 좌표를 그대로 보낸다. 잡은 지점이
+  // 창 안 어디였는지는 렌더러가 알고 있으므로(pointerdown 의 clientX/Y),
+  // main 이 그 오프셋을 따로 들고 있을 이유가 없다 — 끌기 상태를 main 에
+  // 두면 렌더러가 죽거나 창이 닫힐 때 그 상태를 정리할 길을 또 만들어야 한다.
+  //
+  // 끄는 동안에는 저장하지 않는다. 화면만 따라 움직이고, 놓는 순간(drop)에
+  // 한 번만 가장자리에 붙이고 state.json 에 적는다.
+  ipcMain.handle('notes:bookmarkMove', (_e, id, x, y) => {
+    const win = noteWindows.get(id)
+    // 접혀 있을 때만 옮긴다. 펼친 메모는 창 자체를 끄는 것이지 이 경로가 아니다.
+    if (!win || win.isDestroyed() || !isFolded(id)) return { ok: false }
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return { ok: false }
+    const b = win.getBounds()
+    win.setBounds({ x: Math.round(x), y: Math.round(y), width: b.width, height: b.height })
+    return { ok: true }
+  })
+
+  ipcMain.handle('notes:bookmarkDrop', (_e, id, x, y) => {
+    const win = noteWindows.get(id)
+    if (!win || win.isDestroyed() || !isFolded(id)) return { ok: false }
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return { ok: false }
+
+    // 놓은 자리가 어느 모니터인가. getDisplayMatching 은 겹치는 넓이가 가장
+    // 큰 모니터를 주므로, 두 화면에 걸쳐 놓아도 더 많이 걸친 쪽으로 간다.
+    const dropped = { x: Math.round(x), y: Math.round(y), width: BOOKMARK.width, height: BOOKMARK.height }
+    const display = screen().getDisplayMatching(dropped)
+    const anchor = bookmarkAnchorFromDrop(display.workArea, dropped, BOOKMARK)
+    const saved = { displayId: display.id, side: anchor.side, y: anchor.y }
+
+    store.setNote(id, { bookmark: saved })
+    store.save()
+    // 앵커는 펼쳤다 다시 접어도 남는다. 지웠다면 "✕ 를 가리지 않게" 옮겨 둔
+    // 자리가 접을 때마다 원래의 오른쪽 위로 돌아가, 같은 드래그를 매번 다시
+    // 해야 한다 — 고치려던 문제로 그대로 돌아가는 셈이다. 다음 드래그가
+    // 덮어쓸 뿐이다.
+    //
+    // 접힌 순서 목록의 모니터도 같이 맞춰 둔다. 두 곳이 이 책갈피가 어느
+    // 모니터에 있는지를 서로 다르게 알고 있으면 안 된다 — 자동 배치로 돌아갈
+    // 일이 생겼을 때 엉뚱한 화면에서 줄을 서게 된다.
+    const entry = foldOrder.find((e) => e.id === id)
+    if (entry) entry.displayId = display.id
+
+    // 자리를 여기서 정하지 않는다. 이 한 장만 놓으면 같은 변의 나머지와
+    // 겹치거나 사이가 벌어진다 — 묶음 전체를 다시 쌓아야 빈틈이 없다.
+    relayoutBookmarks()
+    return { ok: true }
+  })
+
   ipcMain.handle('notes:update', async (_e, id, patch) => {
     // 예전에는 여기서 { id, text: patch.text } 만 만들어 보냈다 — preload 는
     // updateNote(id, patch) 로 임의의 필드를 받는다고 광고하고 사이드카는
@@ -967,6 +1063,16 @@ app.whenReady().then(async () => {
       if (validated.params.color !== undefined && res.note) {
         notifyNoteColor(id, res.note.color)
       }
+      // 보관하면 바탕화면에서도 내린다. "치워 둔다"는 뜻인데 포스트잇만 그대로
+      // 떠 있으면 앞뒤가 맞지 않는다. 내리는 것은 hideNote 라 Keep 메모에는
+      // 손대지 않는다 — 해제하면 목록에서 다시 띄울 수 있다.
+      //
+      // 해제(false)에서 자동으로 띄우지는 않는다. 보관함을 훑다가 여러 개를
+      // 해제했을 때 포스트잇이 우수수 튀어나오면 그게 더 놀랍다.
+      if (validated.params.archived === true) hideNote(id)
+      // 어느 쪽이든 목록 창은 다시 읽어야 한다. 보관 여부가 곧 그 행이 목록에
+      // 보이는지를 정하므로, 색과 달리 행 하나만 고쳐서는 맞출 수 없다.
+      if (validated.params.archived !== undefined) notifyNotesChanged()
       return { ok: true, ...res }
     } catch (err) {
       // ipcMain.handle 이 던지면 렌더러에는 message 만 건너간다 (err.code 는

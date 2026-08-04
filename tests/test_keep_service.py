@@ -99,9 +99,22 @@ def test_non_object_json_returns_bad_request(service, line):
 
 
 class FakeTimestamps:
+    """노드의 시각 대역.
+
+    created 를 노드마다 1분씩 뒤로 밀어 준다. 목록이 **작성일** 순으로 서는지
+    보려면 노드들의 created 가 서로 달라야 하고, 실제 Keep 도 나중에 만든 노트가
+    더 늦은 created 를 갖는다. 갓 만든 노트의 updated 는 created 와 같다 —
+    편집이 일어나야 갈라진다.
+    """
+
+    _sequence = 0
+
     def __init__(self):
         import datetime
-        self.updated = datetime.datetime(2026, 7, 30, 9, 0, 0)
+        FakeTimestamps._sequence += 1
+        self.created = (datetime.datetime(2026, 7, 30, 9, 0, 0)
+                        + datetime.timedelta(minutes=FakeTimestamps._sequence))
+        self.updated = self.created
 
 
 class FakeColor:
@@ -265,7 +278,10 @@ def test_create_then_list(account):
     assert notes[0]["title"] == "제목"
     assert notes[0]["text"] == "본문"
     assert notes[0]["color"] == "Yellow"
-    assert notes[0]["updated"] == "2026-07-30T09:00:00"
+    # 정확한 시각은 대역의 순번을 따르므로 형식과 관계만 본다(갓 만든 메모는
+    # 작성 시각과 수정 시각이 같다).
+    assert notes[0]["created"] == notes[0]["updated"]
+    assert notes[0]["created"].startswith("2026-07-30T09:")
 
 
 # --- 동기화 -----------------------------------------------------------------
@@ -462,25 +478,29 @@ def test_update_title_and_text_together_detects_conflict_when_server_overrides(a
 # --- 체크리스트 -------------------------------------------------------------
 
 
-def test_text_note_serializes_unchanged_except_for_kind(account):
-    """text 노트의 직렬화 결과는 예전 그대로여야 한다.
+def test_text_note_serializes_with_the_expected_fields(account):
+    """text 노트의 직렬화 결과에 무엇이 실리는지를 못박는다.
 
-    새 필드는 kind 하나뿐이고, items 키는 **생기면 안 된다** — 렌더러는 kind 로
-    분기하지만, 여기에 빈 items 가 딸려 오면 "항목이 하나도 없는 체크리스트"와
-    구별되지 않는다.
+    items 키는 **생기면 안 된다** — 렌더러는 kind 로 분기하지만, 여기에 빈
+    items 가 딸려 오면 "항목이 하나도 없는 체크리스트"와 구별되지 않는다.
+
+    필드 묶음을 통째로 견주는 것이 요점이다. 새 필드가 슬그머니 늘거나 옛 필드가
+    사라지면 여기서 걸린다 — 렌더러가 그 모양에 기대고 있기 때문이다.
     """
     created = _call(account, "create_note", title="제목", text="본문")["result"]["note"]
     assert set(created) == {"id", "title", "text", "color", "pinned", "archived",
-                            "updated", "kind"}
+                            "created", "updated", "kind"}
     assert created["kind"] == "note"
     assert "items" not in created
-    # 예전 일곱 필드의 값도 그대로다.
     assert created["title"] == "제목"
     assert created["text"] == "본문"
     assert created["color"] == "Yellow"
     assert created["pinned"] is False
     assert created["archived"] is False
-    assert created["updated"] == "2026-07-30T09:00:00"
+    # 갓 만든 메모는 작성 시각과 수정 시각이 같다. 정확한 값은 대역의 순번에
+    # 따라 달라지므로 둘의 관계와 형식만 본다.
+    assert created["created"] == created["updated"]
+    assert created["created"].startswith("2026-07-30T09:")
 
 
 def test_list_note_serializes_with_items(account):
@@ -679,3 +699,172 @@ def test_serve_survives_cp949_stdout_with_emoji_note(account):
     emitted = raw_out.getvalue().decode("cp949").strip()
     res = json.loads(emitted)
     assert res["result"]["notes"][0]["text"] == "생각 정리 \U0001f9e0"
+
+
+# --- 보관 처리 ---------------------------------------------------------------
+#
+# Keep 의 '보관처리'다. 지우는 것이 아니라 치워 두는 것이라 trash 와는 전혀 다른
+# 경로이고, node.archived 는 setter 가 있어 색과 같은 update_note 로 나간다.
+
+
+def test_update_archived_true_then_false_round_trips(account):
+    """보관했다가 해제하면 원래대로 돌아와야 한다."""
+    created = _call(account, "create_note", title="t", text="본문")["result"]["note"]
+    assert created["archived"] is False
+
+    res = _call(account, "update_note", id=created["id"], archived=True)["result"]
+    assert res["note"]["archived"] is True
+
+    res = _call(account, "update_note", id=created["id"], archived=False)["result"]
+    assert res["note"]["archived"] is False
+
+
+def test_update_archived_only_leaves_text_untouched_and_reports_no_conflict(account):
+    """보관만 바꾸는 요청은 text=None 으로 들어온다. 색만 바꿀 때와 같은 모양이어야
+    하고, 충돌로 오탐하면 안 된다."""
+    created = _call(account, "create_note", title="t", text="유지될 본문")["result"]["note"]
+    res = _call(account, "update_note", id=created["id"], archived=True)["result"]
+    assert res["note"]["text"] == "유지될 본문"
+    assert res["note"]["title"] == "t"
+    assert res["conflict"] is False
+    assert res["sentText"] == "유지될 본문"
+
+
+def test_update_archived_rejects_non_boolean(account):
+    """참/거짓이 아닌 값은 BAD_REQUEST 다.
+
+    bool(archived) 로 슬쩍 변환하면 안 된다: 문자열 "false" 는 파이썬에서 참이라,
+    해제하려던 요청이 조용히 보관으로 뒤집힌다.
+    """
+    created = _call(account, "create_note", title="t", text="본문")["result"]["note"]
+    for bad in ["false", "true", 1, 0, "", None if False else []]:
+        res = _call(account, "update_note", id=created["id"], archived=bad)
+        assert res["error"]["code"] == "BAD_REQUEST", f"{bad!r} 이 통과했다"
+    # 전부 거절됐으니 노드는 손대지 않은 채로 남아야 한다.
+    notes = _call(account, "list_notes")["result"]["notes"]
+    assert notes[0]["archived"] is False
+
+
+def test_update_archived_together_with_text_applies_both(account):
+    created = _call(account, "create_note", title="t", text="원본")["result"]["note"]
+    res = _call(account, "update_note", id=created["id"], text="수정본", archived=True)["result"]
+    assert res["note"]["text"] == "수정본"
+    assert res["note"]["archived"] is True
+
+
+def test_archived_note_still_appears_in_list_notes(account):
+    """사이드카는 보관 여부를 가리지 않고 전부 준다. **이것이 맞다** — 걸러
+    버리면 앱이 보관된 메모를 볼 수도 해제할 수도 없어져, 보관하는 순간 되돌릴
+    길이 사라진다. 감추는 대신 맨 위 묶음으로 올려 구분한다."""
+    created = _call(account, "create_note", title="보관될 메모", text="본문")["result"]["note"]
+    _call(account, "update_note", id=created["id"], archived=True)
+
+    notes = _call(account, "list_notes")["result"]["notes"]
+    found = [n for n in notes if n["id"] == created["id"]]
+    assert len(found) == 1, "보관됐다고 목록에서 사라지면 안 된다"
+    assert found[0]["archived"] is True
+
+
+def test_update_archived_works_on_a_checklist(account):
+    """체크리스트도 보관할 수 있어야 한다. 본문 쓰기 가드에 걸리면 안 된다 —
+    그 가드는 text 에만 해당한다."""
+    created = _make_list(account, title="장보기", items=[{"text": "우유"}])
+    res = _call(account, "update_note", id=created["id"], archived=True)["result"]
+    assert res["note"]["archived"] is True
+    # 항목은 그대로여야 한다 — 보관은 내용을 건드리지 않는다.
+    assert [i["text"] for i in res["note"]["items"]] == ["우유"]
+
+
+# --- 목록 정렬 ---------------------------------------------------------------
+
+
+def test_list_notes_sorts_by_created_newest_first(account):
+    """작성일 내림차순이다 — 최근에 쓴 메모가 위로."""
+    first = _call(account, "create_note", title="먼저 쓴 것", text="a")["result"]["note"]
+    second = _call(account, "create_note", title="나중에 쓴 것", text="b")["result"]["note"]
+
+    notes = _call(account, "list_notes")["result"]["notes"]
+    ids = [n["id"] for n in notes]
+    assert ids.index(second["id"]) < ids.index(first["id"])
+
+
+def test_editing_an_old_note_does_not_move_it_to_the_top(account):
+    """**이 테스트가 updated 정렬과 갈리는 지점이다.**
+
+    예전에는 updated 기준이라, 몇 달 전 메모를 한 글자만 고쳐도 맨 위로 튀어
+    올라왔다. 목록의 순서가 "언제 쓴 글인가"가 아니라 "마지막으로 건드린 때"가
+    되어 사용자가 기억하는 자리에 메모가 없었다.
+    """
+    old = _call(account, "create_note", title="오래된 것", text="a")["result"]["note"]
+    new = _call(account, "create_note", title="새 것", text="b")["result"]["note"]
+
+    # 오래된 쪽을 지금 고친다 → updated 는 최신이 되지만 created 는 그대로다.
+    _call(account, "update_note", id=old["id"], text="고침")
+    # 대역은 편집으로 updated 를 밀어 주지 않으므로 여기서 직접 민다. 이 한 줄이
+    # 있어야 "updated 기준이었다면 순서가 뒤집혔을" 상황이 실제로 만들어진다 —
+    # 없으면 이 테스트는 옛 구현에서도 통과해 버려 아무것도 지키지 못한다.
+    import datetime
+    account._keep.nodes[old["id"]].timestamps.updated += datetime.timedelta(days=365)
+
+    ids = [n["id"] for n in _call(account, "list_notes")["result"]["notes"]]
+    assert ids.index(new["id"]) < ids.index(old["id"]), "고쳤다고 위로 올라오면 안 된다"
+
+
+def test_list_notes_carries_both_created_and_updated(account):
+    """created 는 정렬과 화면 표시에, updated 는 동기화 판단에 쓰인다."""
+    _call(account, "create_note", title="t", text="본문")
+    note = _call(account, "list_notes")["result"]["notes"][0]
+    assert "created" in note and "updated" in note
+    # 갓 만든 메모는 둘이 같은 순간이다. 형식이 같은지(둘 다 isoformat) 본다.
+    assert note["created"][:10] == note["updated"][:10]
+
+
+def test_sync_notes_uses_the_same_order_as_list_notes(account):
+    """[동기화] 를 눌렀다고 목록 순서가 바뀌면 무엇이 기준인지 알 수 없다."""
+    for i in range(3):
+        _call(account, "create_note", title=f"메모{i}", text="본문")
+    listed = [n["id"] for n in _call(account, "list_notes")["result"]["notes"]]
+    synced = [n["id"] for n in _call(account, "sync_notes")["result"]["notes"]]
+    assert listed == synced
+
+
+def test_archived_notes_come_first_then_newest_created(account):
+    """보관된 것이 맨 위 묶음, 그 안에서도 밖에서도 작성일 최신순."""
+    a = _call(account, "create_note", title="1번", text="x")["result"]["note"]
+    b = _call(account, "create_note", title="2번", text="x")["result"]["note"]
+    c = _call(account, "create_note", title="3번", text="x")["result"]["note"]
+    d = _call(account, "create_note", title="4번", text="x")["result"]["note"]
+
+    # 가장 먼저 만든 것과 세 번째로 만든 것을 보관한다.
+    _call(account, "update_note", id=a["id"], archived=True)
+    _call(account, "update_note", id=c["id"], archived=True)
+
+    ids = [n["id"] for n in _call(account, "list_notes")["result"]["notes"]]
+    # 보관된 둘이 위로(그 안에서 c 가 a 보다 나중에 만들어졌으므로 위),
+    # 그 아래로 보관 안 된 둘이 최신순(d, b).
+    assert ids == [c["id"], a["id"], d["id"], b["id"]]
+
+
+def test_archiving_an_old_note_puts_it_on_top(account):
+    """보관은 작성일과 무관하게 위 묶음으로 올린다 — 그것이 '가장 위' 규칙이다."""
+    old = _call(account, "create_note", title="오래된 것", text="x")["result"]["note"]
+    _call(account, "create_note", title="새 것", text="x")
+
+    before = [n["id"] for n in _call(account, "list_notes")["result"]["notes"]]
+    assert before[0] != old["id"], "보관 전에는 아래에 있다"
+
+    _call(account, "update_note", id=old["id"], archived=True)
+    after = [n["id"] for n in _call(account, "list_notes")["result"]["notes"]]
+    assert after[0] == old["id"], "보관하면 맨 위로"
+
+
+def test_unarchiving_returns_it_to_the_created_order(account):
+    """해제하면 작성일 자리로 돌아간다 — 보관이 순서를 영구히 바꾸지 않는다."""
+    old = _call(account, "create_note", title="오래된 것", text="x")["result"]["note"]
+    new = _call(account, "create_note", title="새 것", text="x")["result"]["note"]
+
+    _call(account, "update_note", id=old["id"], archived=True)
+    _call(account, "update_note", id=old["id"], archived=False)
+
+    ids = [n["id"] for n in _call(account, "list_notes")["result"]["notes"]]
+    assert ids == [new["id"], old["id"]]

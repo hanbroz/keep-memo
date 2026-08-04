@@ -81,6 +81,8 @@ const status = document.getElementById('status')
 const badge = document.getElementById('badge')
 const bookmark = document.getElementById('bookmark')
 const bookmarkLabel = document.getElementById('bookmark-label')
+const pinButton = document.getElementById('pin')
+const archiveButton = document.getElementById('archive')
 const lookToggle = document.getElementById('lookToggle')
 const lookPanel = document.getElementById('lookPanel')
 const colorPicker = document.getElementById('colorPicker')
@@ -1262,9 +1264,159 @@ document.getElementById('fold').addEventListener('click', async () => {
   await window.keepSticky.foldNote(noteId)
 })
 
-// 책갈피를 누르면 접기 직전의 위치와 크기 그대로 돌아온다. 좌표는 main 이
-// state.json 에 들고 있으므로 렌더러는 요청만 한다.
-bookmark.addEventListener('click', () => window.keepSticky.unfoldNote(noteId))
+// --- 보관 -------------------------------------------------------------------
+//
+// Keep 의 '보관처리'다. 색과 같은 update_note 경로로 나간다 — 노트의 필드이지
+// 이 PC 의 설정이 아니므로 state.json 이 아니라 Keep 에 저장된다(압정과 갈리는
+// 지점이 정확히 이것이다).
+
+/** 보관 여부를 단추에 그린다. aria-pressed 가 곧 CSS 의 상태 훅이다. */
+function showArchiveState (on) {
+  archiveButton.setAttribute('aria-pressed', String(!!on))
+  archiveButton.title = on
+    ? '보관 처리됨 — 눌러서 해제합니다'
+    : '이 메모를 보관 처리하기 (지우는 것이 아니라 치워 둡니다)'
+}
+
+// 보관 요청이 이미 하나 나가 있는가. 색 저장과 같은 이유로 막는다 — 연달아
+// 누르면 응답이 뒤섞여 도착해 나중 것이 먼저 것에 덮일 수 있다.
+let archiveSaving = false
+
+archiveButton.addEventListener('click', async () => {
+  // 불러오기 전에는 지금 보관 상태가 무엇인지도 모른다. 색 스와치와 같은 잠금이다.
+  if (!loaded || archiveSaving) return
+  archiveSaving = true
+  const next = archiveButton.getAttribute('aria-pressed') !== 'true'
+  const previous = !next
+  showArchiveState(next)
+  status.textContent = next ? '보관하는 중…' : '보관 해제하는 중…'
+  try {
+    const res = await window.keepSticky.updateNote(noteId, { archived: next })
+    if (!res.ok) {
+      // 실패했으면 단추가 거짓말을 하고 있으면 안 된다.
+      showArchiveState(previous)
+      status.textContent = res.code === 'AUTH_REQUIRED'
+        ? '재로그인이 필요합니다'
+        : `보관하지 못했습니다: ${res.message}`
+      return
+    }
+    // 사이드카가 확인해 준 값으로 다시 맞춘다(색과 같은 관례다).
+    showArchiveState(res.note ? res.note.archived : next)
+    // 보관했으면 main 이 이 창을 바탕화면에서 내린다. 그 전에 문구를 남겨 두면
+    // 창이 사라지기 직전 한 박자 동안 무슨 일이 일어났는지 보인다.
+    status.textContent = next ? '보관했습니다' : '보관을 해제했습니다'
+  } catch (err) {
+    showArchiveState(previous)
+    status.textContent = err && err.message ? `보관하지 못했습니다: ${err.message}` : '보관하지 못했습니다'
+  } finally {
+    archiveSaving = false
+  }
+})
+
+// --- 압정 -------------------------------------------------------------------
+//
+// 이 단추가 생기기 전에는 모든 포스트잇이 예외 없이 항상 위에 떠 있었다
+// (BrowserWindow 의 alwaysOnTop 이 true 로 박혀 있었다). 그래서 켜진 상태가
+// 기본이고, 이 단추는 그것을 **끌 수 있게** 하는 것이 핵심이다.
+
+/** 압정을 실제 상태로 그린다. aria-pressed 가 곧 CSS 의 상태 훅이다. */
+function showPinState (on) {
+  pinButton.setAttribute('aria-pressed', String(!!on))
+  pinButton.title = on
+    ? '항상 위에 보이는 중 — 눌러서 해제합니다'
+    : '다른 창 뒤로 갈 수 있음 — 눌러서 항상 위에 고정합니다'
+}
+
+pinButton.addEventListener('click', async () => {
+  // 이 창이 어느 메모인지 알기 전에는 저장할 곳이 없다.
+  if (!noteId) return
+  const next = pinButton.getAttribute('aria-pressed') !== 'true'
+  // 먼저 그려 반응이 즉각 보이게 하고, 저장된 값이 오면 그것으로 다시 맞춘다 —
+  // 색 스와치, 서체 입력칸과 같은 관례다.
+  showPinState(next)
+  try {
+    showPinState(await window.keepSticky.setAlwaysOnTop(noteId, next))
+  } catch {
+    // 저장에 실패했다면 단추가 거짓말을 하고 있으면 안 된다. 실제 값을 다시 읽어
+    // 맞춘다(그것마저 실패하면 건드리지 않는다 — 마지막으로 그린 값이 남는다).
+    window.keepSticky.getAlwaysOnTop(noteId).then(showPinState).catch(() => {})
+  }
+})
+
+// --- 책갈피: 눌러서 펼치고, 끌어서 옮긴다 ----------------------------------
+//
+// 자동 배치는 접힌 순서대로 화면 오른쪽 **위**에서부터 줄을 세운다. 그런데 그
+// 첫 자리가 최대화된 창의 ✕ / 최소화 / 최대화 단추와 정확히 겹치고, 책갈피는
+// 항상 위에 뜨므로 그 단추들을 눌 수 없게 덮어 버린다. 그래서 옮길 수 있어야
+// 한다 — 세로로도, 반대쪽 변으로도, 다른 모니터로도.
+//
+// **-webkit-app-region: drag 를 쓰지 않는 이유**: 그것에 맡기면 창을 끄는 일은
+// OS 가 대신 해 주지만 그 영역의 마우스 이벤트가 렌더러로 오지 않아 "톡 눌러서
+// 펼치기"와 공존할 수 없고, 놓는 순간을 알 수 없으니 가장자리에 붙일 기회도
+// 없다. 그래서 직접 끈다.
+const DRAG_THRESHOLD = 4 // px. 이보다 덜 움직였으면 펼치려던 클릭으로 본다.
+let bookmarkDrag = null  // { pointerId, screenX, screenY, grabX, grabY, moved }
+
+bookmark.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return
+  // 잡은 지점이 창 안 어디였는지(clientX/Y)를 기억한다. 옮길 좌표에서 이 값을
+  // 빼야 창이 커서에 붙어 따라온다 — 안 빼면 끄는 순간 창의 왼쪽 위가 커서
+  // 자리로 순간이동한다.
+  bookmarkDrag = {
+    pointerId: e.pointerId,
+    screenX: e.screenX,
+    screenY: e.screenY,
+    grabX: e.clientX,
+    grabY: e.clientY,
+    moved: false
+  }
+  // 포인터를 붙잡아 둔다. 창이 커서를 따라 움직이는 동안에도 이 요소가 계속
+  // 이벤트를 받아야 한다.
+  bookmark.setPointerCapture(e.pointerId)
+})
+
+bookmark.addEventListener('pointermove', (e) => {
+  if (!bookmarkDrag || e.pointerId !== bookmarkDrag.pointerId) return
+  if (!bookmarkDrag.moved) {
+    // 문턱을 넘기 전까지는 아무것도 하지 않는다. 손이 1~2px 떨린 것까지
+    // 드래그로 치면 펼치려고 누를 때마다 책갈피가 미세하게 움직인다.
+    if (Math.abs(e.screenX - bookmarkDrag.screenX) < DRAG_THRESHOLD &&
+        Math.abs(e.screenY - bookmarkDrag.screenY) < DRAG_THRESHOLD) return
+    bookmarkDrag.moved = true
+    document.body.classList.add('dragging')
+  }
+  window.keepSticky.moveBookmark(
+    noteId, e.screenX - bookmarkDrag.grabX, e.screenY - bookmarkDrag.grabY
+  )
+})
+
+/**
+ * 끌기를 끝낸다.
+ *
+ * @param {boolean} byUser 손을 뗀 것(pointerup)인가. pointercancel 은 false 다 —
+ *   그때는 펼치면 안 된다. 취소는 사용자가 "눌렀다"고 말한 적이 없는 경로이고,
+ *   여기서 펼치면 다른 창이 포인터를 가져갔을 뿐인데 메모가 튀어나온다.
+ */
+function endBookmarkDrag (e, byUser) {
+  if (!bookmarkDrag || e.pointerId !== bookmarkDrag.pointerId) return
+  const drag = bookmarkDrag
+  bookmarkDrag = null
+  document.body.classList.remove('dragging')
+  if (bookmark.hasPointerCapture(e.pointerId)) bookmark.releasePointerCapture(e.pointerId)
+
+  if (!drag.moved) {
+    // 문턱을 못 넘었다 = 펼치려던 클릭. 접기 직전의 위치와 크기로 돌아온다.
+    // 좌표는 main 이 state.json 에 들고 있으므로 렌더러는 요청만 한다.
+    if (byUser) window.keepSticky.unfoldNote(noteId)
+    return
+  }
+  // 놓았다. 가까운 가장자리에 붙이고 저장하는 것은 main 이 한다.
+  window.keepSticky.dropBookmark(
+    noteId, e.screenX - drag.grabX, e.screenY - drag.grabY
+  )
+}
+bookmark.addEventListener('pointerup', (e) => endBookmarkDrag(e, true))
+bookmark.addEventListener('pointercancel', (e) => endBookmarkDrag(e, false))
 
 // 창을 좁히거나 넓히면 줄이 접히는 자리가 달라진다(펼칠 때도 온다). 높이를 다시
 // 맞추지 않으면 좁힌 창에서 줄마다 뒷부분이 잘려 보인다.
@@ -1330,6 +1482,9 @@ function setEditingEnabled (enabled) {
   }
   setSwatchesEnabled(enabled)
   deleteButton.disabled = !enabled
+  // 보관도 Keep 으로 나가는 일이라 같이 잠긴다. 불러오지 못한 창에서는 지금
+  // 보관 상태가 무엇인지조차 모르므로 토글이 무엇을 뒤집는지 알 수 없다.
+  archiveButton.disabled = !enabled
   // 폰에서 만든 진짜 List 노트에서는 줄의 종류를 바꿀 수 없다 — 모든 줄이
   // 항목이고 그래야만 한다.
   lineToggle.disabled = !enabled || isNativeList
@@ -1485,6 +1640,10 @@ window.keepSticky.noteId().then(async (id) => {
     applyNoteFont()
     showNoteFontInputs()
   }).catch(() => {})
+  // 압정도 서체와 같다 — state.json 에만 있고 Keep 을 거치지 않으므로 아래
+  // list_notes 를 기다리지 않는다. 불러오기가 실패해 편집이 잠긴 창에서도
+  // 이 메모를 뒤로 보낼 수는 있어야 한다.
+  window.keepSticky.getAlwaysOnTop(id).then(showPinState).catch(() => {})
   status.textContent = '불러오는 중'
   const { notes } = await window.keepSticky.listNotes()
   const note = notes.find((n) => n.id === id)
@@ -1523,6 +1682,9 @@ window.keepSticky.noteId().then(async (id) => {
   // note.html 에 없는 이름이면 어느 규칙에도 안 걸려 기본 노란색이 남는다.
   if (note.color) document.body.dataset.color = note.color
   markCurrentColor()
+  // 보관 여부도 Keep 에서 온다. 보관함에서 열어 본 메모라면 눌린 상태로 뜨고,
+  // 그 상태에서 [보관] 을 누르면 해제가 된다.
+  showArchiveState(note.archived)
   bookmarkText = currentBookmarkText()
   // 여기가 편집이 열리는 유일한 지점이다. 색 변경([모양] 패널의 스와치)과
   // [삭제] 도 같이 열린다 — 둘 다 "이 메모를 실제로 받아왔다"를 전제로 한다.

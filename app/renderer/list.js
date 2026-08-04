@@ -97,9 +97,22 @@ function render () {
 
     label.append(check, title)
 
+    // 보관된 메모는 감추지 않고 맨 위 묶음으로 올라온다(정렬은 사이드카가
+    // 한다). 감추면 이 앱에서 보관을 해제할 길이 사라진다 — 목록에 없는 메모는
+    // 열 수도 없기 때문이다. 대신 이 표가 왜 위에 있는지를 말해 준다.
+    if (note.archived) {
+      const tag = document.createElement('span')
+      tag.className = 'tag'
+      tag.textContent = '보관'
+      label.append(tag)
+    }
+
     const date = document.createElement('span')
     date.className = 'date'
-    date.textContent = (note.updated || '').slice(0, 10)
+    // 정렬 기준과 **같은 값**을 보여준다. 작성일로 줄을 세워 놓고 수정일을
+    // 찍으면 날짜 칸이 뒤죽박죽으로 보여 목록이 안 맞춰진 것처럼 읽힌다.
+    // created 가 없는 응답(옛 사이드카)에서는 예전처럼 updated 를 쓴다.
+    date.textContent = (note.created || note.updated || '').slice(0, 10)
 
     li.append(label, date)
     listEl.append(li)

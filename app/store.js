@@ -23,8 +23,22 @@ const { normalizeNoteFontOverride } = require('./renderer/note-font')
 // 전역 서체 설정(this.data.fonts)을 그대로 따른다. Keep 에는 서체 필드가 없어
 // 이 값은 이 PC 에서만 산다 — 그래서 전역 설정처럼 최상위가 아니라 노트 항목
 // 안에 있다.
+//
+// alwaysOnTop 은 압정(📌)의 상태다. **기본값이 true 인 것이 중요하다**: 이
+// 필드가 생기기 전에는 모든 포스트잇이 예외 없이 항상 위에 떠 있었고(main.js 의
+// BrowserWindow 옵션에 박혀 있었다), 기본값을 false 로 두면 이미 쓰던 메모들이
+// 업데이트 한 번에 조용히 뒤로 가라앉는다. 스프레드로 채워지므로 이 필드가 없는
+// 옛 state.json 의 항목도 자동으로 true 가 된다.
+//
+// bookmark 는 접혔을 때 사용자가 끌어다 놓은 자리다. null 이 "직접 옮긴 적 없음"
+// 이고, 그때는 예전처럼 접힌 순서대로 자동으로 줄을 선다.
+// **여기에도 펼친 상태의 기하는 들어오지 않는다** — { displayId, side, y } 뿐이고
+// 폭과 높이는 언제나 BOOKMARK 상수에서 온다. x 를 안 담는 이유도 같다: 변(side)만
+// 있으면 그 모니터의 작업 영역에서 다시 계산할 수 있고, 그래야 해상도가 바뀌어도
+// 가장자리에 정확히 붙는다.
 const DEFAULT_NOTE_STATE = {
-  x: 120, y: 120, w: 320, h: 380, visible: false, folded: false, conflictBackup: null, font: null
+  x: 120, y: 120, w: 320, h: 380, visible: false, folded: false, conflictBackup: null, font: null,
+  alwaysOnTop: true, bookmark: null
 }
 
 class Store {
