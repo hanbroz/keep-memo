@@ -107,3 +107,31 @@ test('세 창의 :root 블록이 갈라지지 않았다', () => {
   assert.deepStrictEqual(read('setup-email.html'), base,
     'setup-email.html 의 :root 가 list.html 과 다르다')
 })
+
+test('포스트잇과 목록의 Keep 팔레트가 갈라지지 않았다', () => {
+  // 목록 행의 배경색은 그 메모를 띄웠을 때의 포스트잇 색과 **같아야** 한다.
+  // 그런데 CSP 가 style-src 'unsafe-inline' 뿐이라 팔레트를 별도 .css 로 빼
+  // <link> 로 나눠 쓸 수가 없고, 두 창이 같은 12개 hex 를 각자 적고 있다.
+  // 한쪽만 고친 날을 잡는 검사다.
+  const palette = (file) => {
+    const html = fs.readFileSync(path.join(RENDERER, file), 'utf8')
+    const m = html.match(/:root\s*\{([\s\S]*?)\}/)
+    assert.ok(m, `${file} 에 :root 블록이 있어야 한다`)
+    const out = {}
+    for (const kv of m[1].matchAll(/(--c-[a-z]+)\s*:\s*([^;]+)/g)) out[kv[1]] = kv[2].trim()
+    return out
+  }
+  const base = palette('note.html')
+  assert.strictEqual(Object.keys(base).length, 12, 'note.html 의 Keep 팔레트는 12색이다')
+  assert.deepStrictEqual(palette('list.html'), base,
+    'list.html 의 Keep 팔레트가 note.html 과 다르다')
+
+  // 값만 같고 규칙이 없으면 목록은 여전히 흰 바탕이다. 12색 전부에 행 규칙이
+  // 있는지까지 본다 — 열두 줄 중 하나를 빠뜨리는 것이 실제로 있을 법한 실수다.
+  const listCss = fs.readFileSync(path.join(RENDERER, 'list.html'), 'utf8')
+  for (const name of ['White', 'Red', 'Orange', 'Yellow', 'Green', 'Teal',
+                      'Blue', 'DarkBlue', 'Purple', 'Pink', 'Brown', 'Gray']) {
+    assert.match(listCss, new RegExp(`li\\[data-color="${name}"\\]`),
+      `list.html 에 ${name} 행 배경 규칙이 없다`)
+  }
+})

@@ -72,5 +72,10 @@ contextBridge.exposeInMainWorld('keepSticky', {
   // 목록 창 전용. Keep 쪽 노트 집합이 바뀌었으니 다시 불러오라는 신호다(지금은
   // 포스트잇을 휴지통으로 보냈을 때만 온다). 내용은 싣지 않는다 — 무엇이
   // 바뀌었는지는 목록 창이 list_notes 로 직접 다시 읽는 편이 정확하다.
-  onNotesChanged: (cb) => ipcRenderer.on('notes:changed', () => cb())
+  onNotesChanged: (cb) => ipcRenderer.on('notes:changed', () => cb()),
+  // 목록 창 전용. 포스트잇에서 메모 색이 바뀌었다 — 목록 행의 배경색이 곧 그
+  // 메모의 색이라 같이 따라가야 한다. notes:changed 와 달리 내용을 싣는다:
+  // 무엇이 바뀌었는지 정확히 알기 때문에 목록을 통째로 다시 읽을 이유가 없고,
+  // 다시 읽으면 아직 [완료] 를 누르지 않은 체크까지 초기화된다.
+  onNoteColor: (cb) => ipcRenderer.on('notes:color', (_e, id, color) => cb(id, color))
 })

@@ -37,6 +37,13 @@
       --ink: #1f2328;
       --ink-dim: #6a7178;
       --line: #e6e8ea;
+
+      /* Keep 팔레트 12색. note.html 과 **같은 값이어야 한다** — 목록 행의
+         배경색이 그 메모를 띄웠을 때의 포스트잇 색과 달라 보이면 안 된다.
+         갈라지지 않는지는 renderer-globals.test.js 가 지킨다. */
+      --c-white: #ffffff;   --c-red: #f6c8c2;    --c-orange: #fbd9a4; --c-yellow: #fdf6a9;
+      --c-green: #dbeeb4;   --c-teal: #bfe8e0;    --c-blue: #c8e3f6;   --c-darkblue: #c6cbe9;
+      --c-purple: #ddc9e9;  --c-pink: #f6cfe0;    --c-brown: #e4d3c1;  --c-gray: #e4e6e8;
     }
 
     html, body { height: 100%; }
@@ -68,6 +75,24 @@
     ul { list-style: none; margin: 0; padding: 0; }
     li { display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--line); }
     li:last-child { border-bottom: 0; }
+
+    /* 메모 색을 행 배경으로 그대로 옮긴다 — note.html 의 body 규칙과 짝이다.
+       list.js 가 li.dataset.color 에 심는다. 속성 값이므로 innerHTML 경로가
+       아니고, 모르는 이름(Keep 이 색을 하나 더 늘리는 날)이면 어느 규칙에도
+       걸리지 않아 흰 바탕 그대로 남는다 — 행이 사라지지는 않는다.
+       '(제목없음)' 안내 행처럼 노트가 없는 li 에도 data-color 가 없어 그대로다. */
+    li[data-color="White"]    { background: var(--c-white); }
+    li[data-color="Red"]      { background: var(--c-red); }
+    li[data-color="Orange"]   { background: var(--c-orange); }
+    li[data-color="Yellow"]   { background: var(--c-yellow); }
+    li[data-color="Green"]    { background: var(--c-green); }
+    li[data-color="Teal"]     { background: var(--c-teal); }
+    li[data-color="Blue"]     { background: var(--c-blue); }
+    li[data-color="DarkBlue"] { background: var(--c-darkblue); }
+    li[data-color="Purple"]   { background: var(--c-purple); }
+    li[data-color="Pink"]     { background: var(--c-pink); }
+    li[data-color="Brown"]    { background: var(--c-brown); }
+    li[data-color="Gray"]     { background: var(--c-gray); }
 
     /* 체크 상자와 제목을 한 label 로 묶어 제목을 눌러도 토글되게 한다.
        for/id 짝을 쓰지 않으므로 Keep 의 노트 id 를 DOM 속성에 흘리지 않는다. */

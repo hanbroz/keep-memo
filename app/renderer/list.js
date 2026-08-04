@@ -70,6 +70,10 @@ function render () {
 
   for (const note of shown) {
     const li = document.createElement('li')
+    // 메모 색을 행 배경으로 옮긴다(실제 색 값과 규칙은 list.html 에 있다).
+    // 색 이름은 Keep 이 정한 12개 중 하나짜리 열거값이라 노트 id 와 달리 DOM
+    // 속성에 둬도 된다 — 감출 것이 없고, 오히려 CSS 가 읽을 수 있어야 한다.
+    if (note.color) li.dataset.color = note.color
 
     const label = document.createElement('label')
     label.className = 'row'
@@ -320,6 +324,20 @@ window.addEventListener('focus', () => { refreshChecks().catch(() => {}) })
 //
 // 검색어는 건드리지 않는다(render() 가 지금 입력칸 값을 다시 읽는다). 체크
 // 상태는 reload() 가 실제로 떠 있는 창들로 다시 맞춘다.
+// 포스트잇에서 색을 바꾸면 목록 행의 배경도 같이 바뀌어야 한다. 목록을 다시
+// 읽지 않고 손에 있는 노트의 color 만 갈아 끼운 뒤 다시 그린다 — render() 는
+// 체크 상태를 checkedIds 에서 읽으므로, 아직 [완료] 를 누르지 않은 체크가
+// 그대로 남는다(reload() 였다면 실제로 떠 있는 창들로 덮여 날아갔을 것이다).
+// 검색어도 그대로다(render() 가 지금 입력칸 값을 다시 읽는다).
+window.keepSticky.onNoteColor((id, color) => {
+  const note = allNotes.find((n) => n.id === id)
+  // 목록을 아직 못 받아왔거나 그 사이 사라진 메모라면 할 일이 없다. 같은 색이
+  // 다시 온 경우도 마찬가지다 — 굳이 목록을 다시 그리지 않는다.
+  if (!note || note.color === color) return
+  note.color = color
+  render()
+})
+
 window.keepSticky.onNotesChanged(() => {
   reload().catch(() => {
     // 다시 못 받아왔다면 화면은 직전 목록 그대로 둔다 — 여기서 목록을 비우면

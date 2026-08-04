@@ -741,6 +741,25 @@ function notifyNotesChanged () {
   wc.send('notes:changed')
 }
 
+/**
+ * 포스트잇에서 고른 색을 목록 창의 그 행에도 입힌다. 목록 행의 배경색이 곧 그
+ * 메모의 색이므로(list.html), 둘이 동시에 떠 있는데 한쪽만 바뀌면 눈에 띄게
+ * 어긋난다.
+ *
+ * **notes:changed 를 재활용하지 않는 이유**가 이 함수의 존재 이유다. 그 신호는
+ * 목록 창을 reload() 시키는데, reload() 는 체크 상태를 실제로 떠 있는 창들로
+ * 통째로 다시 맞춘다 — 사용자가 목록에서 체크만 해 두고 아직 [완료] 를 누르지
+ * 않았다면 그 체크가 색 한 번 바꿨다고 날아간다. 색만 바뀐 것을 아는 여기서는
+ * 색만 보내면 되고, 목록 창은 다시 그리기만 하므로 체크가 그대로 남는다.
+ * 사이드카 왕복(list_notes)이 없다는 것도 덤이다.
+ */
+function notifyNoteColor (id, color) {
+  if (!listWindow || listWindow.isDestroyed()) return
+  const wc = listWindow.webContents
+  if (!wc || wc.isDestroyed()) return
+  wc.send('notes:color', id, color)
+}
+
 app.whenReady().then(async () => {
   // 기본 메뉴 제거는 창을 하나라도 만들기 전에 한다 — 최초 실행 설정 창과 로그인
   // 창까지 포함해서다. 창이 생긴 뒤에 부르면 그 창들은 메뉴를 단 채로 뜬다.
@@ -941,6 +960,13 @@ app.whenReady().then(async () => {
       // 지우는 UI 는 Phase 2 라서 사용자는 존재조차 모른다.
       store.setNote(id, { conflictBackup: res.conflict ? sentContent : null })
       store.save()
+      // 색이 실린 patch 일 때만 목록 창에 알린다. 제목/본문 저장은 훨씬 잦고
+      // (포커스가 빠질 때마다) 목록 행의 배경색과는 무관하다. 보내는 값은
+      // 우리가 보낸 이름이 아니라 사이드카가 확인해 준 res.note.color 다 —
+      // 포스트잇도 같은 값을 입히므로(note.js) 두 창이 어긋날 수 없다.
+      if (validated.params.color !== undefined && res.note) {
+        notifyNoteColor(id, res.note.color)
+      }
       return { ok: true, ...res }
     } catch (err) {
       // ipcMain.handle 이 던지면 렌더러에는 message 만 건너간다 (err.code 는
