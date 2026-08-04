@@ -911,3 +911,147 @@ def test_non_auth_sync_failure_is_still_internal(account):
     res = _call(account, "sync_notes")
     assert res["error"]["code"] == "INTERNAL"
     assert "network unreachable" in res["error"]["message"]
+
+
+# --- 실패한 쓰기가 로컬에 남지 않는다 -----------------------------------------
+#
+# 사용자가 실제로 겪은 증상: "구글 Keep 의 보관 항목과 앱의 보관 항목이 서로
+# 일치하지 않습니다." gkeepapi 는 node.archived = True 같은 대입을 그 자리에서
+# 메모리에 반영하고 서버로 보내는 것은 sync() 다. sync 가 실패하면 서버는 그
+# 변경을 모르는데 이 세션의 노드는 바뀐 채로 남고, list_notes 는 sync 를 부르지
+# 않으므로 앱은 Keep 에 존재한 적 없는 상태를 계속 보여준다.
+
+
+def test_failed_write_drops_the_local_session(account):
+    created = _call(account, "create_note", title="t", text="본문")["result"]["note"]
+    keep = account._keep  # 버려지기 전에 붙잡아 둔다
+    keep.sync_error = RuntimeError("network unreachable")
+
+    res = _call(account, "update_note", id=created["id"], archived=True)
+    assert res["error"]["code"] == "INTERNAL"
+
+    # 로컬 노드는 이미 바뀌어 있다. 이것이 어긋남의 씨앗이다.
+    assert keep.nodes[created["id"]].archived is True
+    # 그래서 세션을 통째로 버린다 — 다음 호출의 _require_keep 이 authenticate 로
+    # 서버 상태를 새로 받아 오므로, 서버가 모르는 보관 상태가 살아남지 못한다.
+    assert account._keep is None
+
+
+def test_failed_write_drops_the_session_on_auth_failure_too(account):
+    """인증 만료로 실패한 경우도 같다 — 실제로 보고된 조합이 이쪽이다."""
+    created = _call(account, "create_note", title="t", text="본문")["result"]["note"]
+    keep = account._keep
+    keep.sync_error = ks.gkeepapi.exception.LoginException("BadAuthentication")
+
+    res = _call(account, "update_note", id=created["id"], archived=True)
+    assert res["error"]["code"] == "AUTH_REQUIRED"
+    assert account._keep is None
+
+
+def test_failed_trash_also_drops_the_local_session(account):
+    """update_note 만이 아니다. 노드를 먼저 고치고 미는 경로는 전부 같다."""
+    created = _call(account, "create_note", title="t", text="본문")["result"]["note"]
+    account._keep.sync_error = RuntimeError("boom")
+
+    assert _call(account, "trash_note", id=created["id"])["error"]["code"] == "INTERNAL"
+    assert account._keep is None
+
+
+def test_successful_write_keeps_the_session(account):
+    """성공한 저장까지 세션을 버리면 저장할 때마다 재인증한다."""
+    created = _call(account, "create_note", title="t", text="본문")["result"]["note"]
+    keep = account._keep
+    _call(account, "update_note", id=created["id"], archived=True)
+    assert account._keep is keep
+
+
+def test_failed_sync_notes_keeps_the_session(account):
+    """[동기화]는 로컬을 고치지 않는다 — 버릴 것이 없으므로 세션을 유지한다.
+
+    네트워크가 잠깐 끊겼다고 다음 호출에서 재인증 왕복을 치를 이유가 없다.
+    """
+    _call(account, "create_note", title="t", text="본문")
+    keep = account._keep
+    keep.sync_error = RuntimeError("network unreachable")
+
+    assert _call(account, "sync_notes")["error"]["code"] == "INTERNAL"
+    assert account._keep is keep
+
+
+# --- 고정 (Keep 의 '고정됨') ---------------------------------------------------
+#
+# 이 앱의 압정(항상 위)과는 다른 것이다. 고정은 Keep 노트의 필드라 폰과 웹에도
+# 그대로 가고 목록의 순서를 정한다. 압정은 이 PC 의 창을 다른 창 위에 띄울지일
+# 뿐이라 state.json 의 alwaysOnTop 에만 산다 — 여기 오지 않는다.
+
+
+def test_update_pinned_true_then_false_round_trips(account):
+    created = _call(account, "create_note", title="t", text="본문")["result"]["note"]
+    assert created["pinned"] is False
+
+    res = _call(account, "update_note", id=created["id"], pinned=True)["result"]
+    assert res["note"]["pinned"] is True
+
+    res = _call(account, "update_note", id=created["id"], pinned=False)["result"]
+    assert res["note"]["pinned"] is False
+
+
+def test_update_pinned_rejects_non_boolean(account):
+    created = _call(account, "create_note", title="t", text="본문")["result"]["note"]
+    for bad in ["false", "true", 1, 0, []]:
+        res = _call(account, "update_note", id=created["id"], pinned=bad)
+        assert res["error"]["code"] == "BAD_REQUEST", f"{bad!r} 이 통과했다"
+    assert _call(account, "list_notes")["result"]["notes"][0]["pinned"] is False
+
+
+def test_list_order_is_pinned_then_archived_then_rest(account):
+    """**요청받은 순서 그대로다: 고정 최신순 → 보관 최신순 → 일반 최신순.**"""
+    a = _call(account, "create_note", title="1번", text="x")["result"]["note"]
+    b = _call(account, "create_note", title="2번", text="x")["result"]["note"]
+    c = _call(account, "create_note", title="3번", text="x")["result"]["note"]
+    d = _call(account, "create_note", title="4번", text="x")["result"]["note"]
+    e = _call(account, "create_note", title="5번", text="x")["result"]["note"]
+    f = _call(account, "create_note", title="6번", text="x")["result"]["note"]
+
+    _call(account, "update_note", id=a["id"], pinned=True)    # 고정, 가장 오래됨
+    _call(account, "update_note", id=d["id"], pinned=True)    # 고정, 더 최근
+    _call(account, "update_note", id=b["id"], archived=True)  # 보관, 오래됨
+    _call(account, "update_note", id=e["id"], archived=True)  # 보관, 더 최근
+    # c, f 는 그대로 (일반)
+
+    ids = [n["id"] for n in _call(account, "list_notes")["result"]["notes"]]
+    assert ids == [d["id"], a["id"],   # 고정 최신순
+                   e["id"], b["id"],   # 보관 최신순
+                   f["id"], c["id"]]   # 일반 최신순
+
+
+def test_pinned_beats_archived_when_both(account):
+    """둘 다 달린 메모는 고정 묶음에 선다 — 위 순서가 곧 우선순위다."""
+    both = _call(account, "create_note", title="둘 다", text="x")["result"]["note"]
+    later = _call(account, "create_note", title="나중에 만든 보관", text="x")["result"]["note"]
+
+    _call(account, "update_note", id=both["id"], pinned=True, archived=True)
+    _call(account, "update_note", id=later["id"], archived=True)
+
+    ids = [n["id"] for n in _call(account, "list_notes")["result"]["notes"]]
+    assert ids[0] == both["id"], "고정이 보관보다 위다"
+
+
+def test_unpinning_returns_it_to_the_created_order(account):
+    """해제하면 제자리로 돌아간다 — 고정이 순서를 영구히 바꾸지 않는다."""
+    old = _call(account, "create_note", title="오래된 것", text="x")["result"]["note"]
+    new = _call(account, "create_note", title="새 것", text="x")["result"]["note"]
+
+    _call(account, "update_note", id=old["id"], pinned=True)
+    assert _call(account, "list_notes")["result"]["notes"][0]["id"] == old["id"]
+
+    _call(account, "update_note", id=old["id"], pinned=False)
+    ids = [n["id"] for n in _call(account, "list_notes")["result"]["notes"]]
+    assert ids == [new["id"], old["id"]]
+
+
+def test_pinned_and_archived_can_be_set_together(account):
+    created = _call(account, "create_note", title="t", text="본문")["result"]["note"]
+    res = _call(account, "update_note", id=created["id"], pinned=True, archived=True)["result"]
+    assert res["note"]["pinned"] is True
+    assert res["note"]["archived"] is True

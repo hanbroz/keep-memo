@@ -1134,9 +1134,11 @@ app.whenReady().then(async () => {
       // (Keep 노트의 필드). 색이나 압정을 바꿔도 창이 닫히지 않는 것과 같은
       // 이유로, 보관도 창을 건드릴 이유가 없다. 내리고 싶으면 ✕ 가 있다.
       //
-      // 목록 창은 다시 읽어야 한다 — 보관된 메모는 맨 위 묶음으로 자리를
-      // 옮기므로(_serialize_for_list), 색과 달리 행 하나만 고쳐서는 맞출 수 없다.
-      if (validated.params.archived !== undefined) notifyNotesChanged()
+      // 목록 창은 다시 읽어야 한다 — 보관과 고정은 그 메모를 다른 묶음으로
+      // 옮기므로(_serialize_for_list 의 고정 → 보관 → 나머지), 색과 달리 행
+      // 하나만 고쳐서는 맞출 수 없다. 순서가 통째로 달라진다.
+      if (validated.params.archived !== undefined ||
+          validated.params.pinned !== undefined) notifyNotesChanged()
       return { ok: true, ...res }
     } catch (err) {
       // ipcMain.handle 이 던지면 렌더러에는 message 만 건너간다 (err.code 는

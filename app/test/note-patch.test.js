@@ -137,13 +137,36 @@ test('archived 와 다른 필드를 같이 보내도 된다', () => {
 })
 
 test('archived 옆에 모르는 필드가 있으면 통째로 거절한다', () => {
-  const res = validateNotePatch({ archived: true, pinned: true })
+  // 예전에는 여기 pinned 를 썼는데 그것이 지원 필드가 되면서 이 테스트가
+  // 실패했다 — 의도대로다. 지원하지 않는 것이 확실한 필드로 바꾼다.
+  const res = validateNotePatch({ archived: true, labels: ['업무'] })
   assert.strictEqual(res.ok, false)
-  assert.match(res.message, /pinned/)
+  assert.match(res.message, /labels/)
 })
 
 test('참/거짓이 아닌 archived 도 여기서는 통과한다 — 값 검사는 사이드카가 한다', () => {
   // 이 함수는 "보낼 수 있는 키"의 화이트리스트다. 값의 형태를 판정하는 진짜
   // 경계는 사이드카이고, 거기서 bool 이 아니면 BadRequest 로 거절한다.
   assert.strictEqual(validateNotePatch({ archived: 'true' }).ok, true)
+})
+
+test('pinned 도 통과시킨다 — Keep 의 고정됨이다', () => {
+  assert.deepStrictEqual(validateNotePatch({ pinned: true }), { ok: true, params: { pinned: true } })
+  assert.deepStrictEqual(validateNotePatch({ pinned: false }), { ok: true, params: { pinned: false } })
+})
+
+test('압정(항상 위)은 이 경로로 오지 않는다', () => {
+  // alwaysOnTop 은 state.json 에만 사는 이 PC 의 설정이라 Keep 으로 나가지
+  // 않는다. 실수로 여기 실리면 사이드카가 모르는 키라 통째로 거절당한다 —
+  // 그 전에 여기서 걸린다.
+  const res = validateNotePatch({ alwaysOnTop: true })
+  assert.strictEqual(res.ok, false)
+  assert.match(res.message, /alwaysOnTop/)
+})
+
+test('고정과 보관을 같이 보낼 수 있다', () => {
+  assert.deepStrictEqual(
+    validateNotePatch({ pinned: true, archived: true }),
+    { ok: true, params: { archived: true, pinned: true } }
+  )
 })

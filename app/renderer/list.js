@@ -97,13 +97,17 @@ function render () {
 
     label.append(check, title)
 
-    // 보관된 메모는 감추지 않고 맨 위 묶음으로 올라온다(정렬은 사이드카가
-    // 한다). 감추면 이 앱에서 보관을 해제할 길이 사라진다 — 목록에 없는 메모는
-    // 열 수도 없기 때문이다. 대신 이 표가 왜 위에 있는지를 말해 준다.
-    if (note.archived) {
+    // 왜 이 행이 위에 있는지를 표로 말해 준다. 묶음은 고정 → 보관 → 나머지이고
+    // 정렬은 사이드카가 한다(_serialize_for_list). 어느 쪽도 목록에서 감추지
+    // 않는다 — 감추면 이 앱에서 그 상태를 되돌릴 길이 사라진다.
+    //
+    // 둘 다 달린 메모는 '고정'만 보여준다. 고정이 이긴 묶음이고, 44px 남짓한
+    // 행에 표를 두 개 붙이면 제목 자리를 잡아먹는다.
+    const tagText = note.pinned ? '고정' : (note.archived ? '보관' : '')
+    if (tagText) {
       const tag = document.createElement('span')
       tag.className = 'tag'
-      tag.textContent = '보관'
+      tag.textContent = tagText
       label.append(tag)
     }
 
@@ -404,9 +408,26 @@ window.keepSticky.getFontSettings().then((settings) => {
   showFontSettings(applied)
 }).catch(() => {})
 
-reload().catch((err) => {
+// 창이 뜰 때 두 걸음으로 그린다.
+//
+//  1. reload() — list_notes 는 sync 를 부르지 않아 즉시 돌아온다. 캐시된 목록으로
+//     창을 곧바로 쓸 만하게 만든다.
+//  2. syncNotes() — 그 다음 서버와 맞춘다. list_notes 만으로는 폰이나
+//     keep.google.com 에서 생긴 변경(보관, 삭제, 새 메모)이 이 세션에 영영
+//     반영되지 않는다. "앱의 보관 항목과 Keep 의 보관 항목이 다르다"의 나머지
+//     절반이 이것이었다.
+//
+// 순서가 중요하다. 곧바로 syncNotes() 부터 하면 네트워크 왕복 동안 빈 창이 뜬다.
+//
+// **이미 떠 있는 창을 앞으로 가져올 때는 하지 않는다.** syncNotes() 안의
+// applyNotesAndVisible 이 체크된 집합을 실제로 떠 있는 창들로 통째로 덮기 때문에,
+// 체크만 해두고 [완료] 를 아직 안 누른 사용자의 선택이 날아간다. 창이 새로 뜨는
+// 지금은 어차피 체크를 처음 세우는 참이라 잃을 것이 없다. ([완료] 가 창을 닫으므로
+// 실제로 대부분의 '열기'가 이 경로다. 이미 떠 있는 창은 [동기화] 로 맞춘다.)
+reload().then(() => syncNotes()).catch((err) => {
   // 목록을 못 받아왔다. notesLoaded 가 서지 않으므로 [완료] 는 아무것도 내리지
   // 않는다 — 사용자가 이유를 알 수 있게 상태 줄에도 남긴다.
+  // (syncNotes 는 스스로 실패를 삼키고 상태 줄에 남기므로 여기 오지 않는다.)
   listEl.textContent = ''
   showEmpty('메모 목록을 불러오지 못했습니다.')
   statusEl.textContent = err && err.message ? err.message : '메모 목록을 불러오지 못했습니다.'

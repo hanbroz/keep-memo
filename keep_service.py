@@ -115,21 +115,39 @@ def _serialize_for_list(nodes) -> list:
     눌렀다고 목록의 순서가 바뀌면 무엇이 기준인지 알 수 없다. 두 곳이 각자
     정렬하면 언젠가 갈라지므로 이 함수 하나만 쓴다.
 
-    **보관 처리한 메모가 맨 위 묶음으로 온다.** 목록에서 감추지 않는 것이
-    핵심이다 — 감추면 이 앱에서 보관을 해제할 길이 사라진다. 대신 위로 모아
-    두어 "치워 둔 것들"이 한눈에 구분되게 한다.
+    **묶음은 셋이다: 고정됨 → 보관됨 → 나머지.** Keep 의 '고정됨'(node.pinned)이
+    맨 위, 그 다음이 보관 처리한 것, 그 아래가 평범한 메모다. 어느 묶음에서도
+    감추지 않는다 — 감추면 이 앱에서 그 상태를 되돌릴 길이 사라진다.
+
+    고정과 보관을 동시에 단 메모는 고정 쪽에 선다(_list_rank 가 pinned 를 먼저
+    본다). 위 순서가 곧 그 우선순위다.
 
     두 기준을 한 번에 거는 방법이 tuple 키다. reverse=True 가 두 자리에 모두
-    걸리는데 마침 둘 다 내림차순을 원한다 — archived 는 True(보관됨)가 위로,
-    created 는 최신이 위로. 방향이 갈렸다면 이렇게 못 쓴다.
+    걸리는데 마침 둘 다 내림차순을 원한다 — 묶음은 큰 값(고정=2)이 위로,
+    created 는 최신이 위로. 방향이 갈렸다면 이렇게 못 쓰고 키를 뒤집어야 한다.
 
     isoformat() 문자열을 그대로 비교하는 것은 안전하다. ISO 8601 은 같은 형식과
     시간대라면 사전순이 곧 시간순이고, 여기 오는 값은 전부 같은 경로(gkeepapi 의
     NodeTimestamps)에서 나온다.
     """
     notes = [_serialize(n) for n in nodes]
-    notes.sort(key=lambda n: (n["archived"], n["created"]), reverse=True)
+    notes.sort(key=lambda n: (_list_rank(n), n["created"]), reverse=True)
     return notes
+
+
+def _list_rank(note) -> int:
+    """목록에서 어느 묶음에 서는가. **큰 값이 위로 온다.**
+
+    Keep 의 '고정됨'은 이 앱의 압정(항상 위)과 다른 것이다. 고정은 Keep 노트의
+    필드(pinned)라 모든 기기가 공유하고 목록의 순서를 정하며, 압정은 이 PC 의
+    창을 다른 창 위에 띄울지일 뿐이라 state.json 의 alwaysOnTop 에만 산다.
+    이름이 갈라져 있는 것이 그 구분을 지킨다.
+    """
+    if note["pinned"]:
+        return 2
+    if note["archived"]:
+        return 1
+    return 0
 
 
 def _serialize_items(node) -> list:
@@ -263,7 +281,7 @@ class KeepService:
     def create_note(self, title: str = "", text: str = "") -> dict:
         keep = self._require_keep()
         node = keep.createNote(title, text)
-        keep.sync()
+        self._sync_or_drop(keep)
         return {"note": _serialize(node)}
 
     def update_checklist(self, id: str, items, title=None) -> dict:  # noqa: A002
@@ -306,7 +324,7 @@ class KeepService:
             item.checked = entry["checked"]
         sent_items = [dict(e) for e in entries]
 
-        keep.sync()
+        self._sync_or_drop(keep)
 
         after = keep.get(id)
         if after is None:
@@ -322,7 +340,8 @@ class KeepService:
             "sentItems": sent_items,
         }
 
-    def update_note(self, id: str, title=None, text=None, color=None, archived=None) -> dict:  # noqa: A002
+    def update_note(self, id: str, title=None, text=None, color=None,  # noqa: A002
+                    archived=None, pinned=None) -> dict:
         keep = self._require_keep()
         node = keep.get(id)
         if node is None:
@@ -356,6 +375,12 @@ class KeepService:
         if archived is not None and not isinstance(archived, bool):
             raise BadRequest(f"archived 는 true/false 여야 한다: {archived!r}")
 
+        # 고정도 같은 이유로 엄격히 본다. Keep 의 '고정됨'(pinned)이고, 이 앱의
+        # 압정(항상 위)과는 다른 것이다 — 저쪽은 Keep 을 거치지 않고 state.json 의
+        # alwaysOnTop 에만 산다.
+        if pinned is not None and not isinstance(pinned, bool):
+            raise BadRequest(f"pinned 는 true/false 여야 한다: {pinned!r}")
+
         if title is not None:
             node.title = title
         if text is not None:
@@ -364,9 +389,11 @@ class KeepService:
             node.color = color_value
         if archived is not None:
             node.archived = archived
+        if pinned is not None:
+            node.pinned = pinned
         sent_text = node.text or ""
 
-        keep.sync()
+        self._sync_or_drop(keep)
 
         # sync 는 서버 판정 결과를 로컬 노드에 덮어쓴다. 우리가 보낸 것과
         # 다르면 다른 기기의 편집이 이겼다는 뜻이다.
@@ -385,10 +412,34 @@ class KeepService:
         if node is None:
             raise NotFound(id)
         node.trash()  # delete() 가 아니다. Keep 휴지통에서 7일간 복구 가능.
-        keep.sync()
+        self._sync_or_drop(keep)
         return {"ok": True}
 
     # --- 내부 -------------------------------------------------------------
+
+    def _sync_or_drop(self, keep) -> None:
+        """서버에 밀어 넣는다. 실패하면 이 세션의 로컬 상태를 통째로 버린다.
+
+        **실패한 쓰기가 로컬에 남아서는 안 된다.** gkeepapi 는 `node.archived = True`
+        같은 대입을 그 자리에서 메모리에 반영하고, 서버로 보내는 것은 sync() 다.
+        그래서 sync() 가 실패하면(인증 만료, 네트워크) 서버는 그 변경을 모르는데
+        이 세션의 노드는 바뀐 채로 남는다. 게다가 list_notes 는 sync 를 부르지
+        않으므로, 그 뒤로 앱은 **Keep 에 존재한 적 없는 상태**를 계속 보여준다 —
+        사용자에게는 "앱의 보관 항목과 Keep 의 보관 항목이 다르다"로 보인다.
+        실제로 보고된 증상이 그것이다.
+
+        캐시를 버리면 다음 호출의 _require_keep() 이 authenticate() 로 서버 상태를
+        새로 받아 온다(gkeepapi 의 authenticate 는 sync 까지 한다). 필드를 하나씩
+        되돌리는 것보다 거칠지만, 바꾼 필드가 몇 개든 실패 이유가 무엇이든 옳다 —
+        되돌리기는 새 필드를 더할 때마다 같이 고쳐야 하고, 언젠가 하나를 빠뜨린다.
+
+        예외는 그대로 다시 던진다. 실패를 삼키면 사용자는 저장된 줄 안다.
+        """
+        try:
+            keep.sync()
+        except Exception:
+            self._keep = None
+            raise
 
     def _require_keep(self):
         if self._keep is not None:

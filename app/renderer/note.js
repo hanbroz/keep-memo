@@ -81,8 +81,12 @@ const status = document.getElementById('status')
 const badge = document.getElementById('badge')
 const bookmark = document.getElementById('bookmark')
 const bookmarkLabel = document.getElementById('bookmark-label')
-const pinButton = document.getElementById('pin')
+const onTopButton = document.getElementById('pin')
 const archiveButton = document.getElementById('archive')
+// Keep 의 '고정됨'. 위 onTopButton(압정, 항상 위)과 다른 것이라 이름을 각자의
+// 데이터 필드에 맞춰 둔다 — pinned 는 Keep 노트의 필드, alwaysOnTop 은
+// state.json 의 필드다. 둘 다 "pin" 으로 부르면 언젠가 하나를 다른 하나로 고친다.
+const pinnedButton = document.getElementById('pinned')
 const lookToggle = document.getElementById('lookToggle')
 const lookPanel = document.getElementById('lookPanel')
 const colorPicker = document.getElementById('colorPicker')
@@ -1313,33 +1317,77 @@ archiveButton.addEventListener('click', async () => {
   }
 })
 
-// --- 압정 -------------------------------------------------------------------
+// --- 고정 (Keep 의 '고정됨') --------------------------------------------------
+//
+// 보관과 완전히 같은 뼈대다 — Keep 노트의 필드라 update_note 로 나가고, 목록의
+// 묶음(고정 → 보관 → 나머지)을 정한다. 아래 압정과 헷갈리면 안 된다: 저쪽은
+// 이 PC 의 창을 다른 창 위에 띄울지일 뿐 Keep 에 나가지 않는다.
+
+/** 고정 여부를 단추에 그린다. aria-pressed 가 곧 CSS 의 상태 훅이다. */
+function showPinnedState (on) {
+  pinnedButton.setAttribute('aria-pressed', String(!!on))
+  pinnedButton.title = on
+    ? 'Keep 에서 고정됨 — 눌러서 해제합니다'
+    : 'Keep 에서 고정하기 (목록 맨 위로)'
+}
+
+// 보관과 같은 이유의 잠금이다 — 연달아 누르면 응답이 뒤섞여 나중 것이 먼저 것에
+// 덮일 수 있다.
+let pinnedSaving = false
+
+pinnedButton.addEventListener('click', async () => {
+  if (!loaded || pinnedSaving) return
+  pinnedSaving = true
+  const next = pinnedButton.getAttribute('aria-pressed') !== 'true'
+  const previous = !next
+  showPinnedState(next)
+  status.textContent = next ? '고정하는 중…' : '고정 해제하는 중…'
+  try {
+    const res = await window.keepSticky.updateNote(noteId, { pinned: next })
+    if (!res.ok) {
+      showPinnedState(previous)
+      status.textContent = res.code === 'AUTH_REQUIRED'
+        ? '재로그인이 필요합니다'
+        : `고정하지 못했습니다: ${res.message}`
+      return
+    }
+    showPinnedState(res.note ? res.note.pinned : next)
+    status.textContent = next ? '고정했습니다' : '고정을 해제했습니다'
+  } catch (err) {
+    showPinnedState(previous)
+    status.textContent = err && err.message ? `고정하지 못했습니다: ${err.message}` : '고정하지 못했습니다'
+  } finally {
+    pinnedSaving = false
+  }
+})
+
+// --- 압정 (이 PC 에서 항상 위) ------------------------------------------------
 //
 // 이 단추가 생기기 전에는 모든 포스트잇이 예외 없이 항상 위에 떠 있었다
 // (BrowserWindow 의 alwaysOnTop 이 true 로 박혀 있었다). 그래서 켜진 상태가
 // 기본이고, 이 단추는 그것을 **끌 수 있게** 하는 것이 핵심이다.
 
 /** 압정을 실제 상태로 그린다. aria-pressed 가 곧 CSS 의 상태 훅이다. */
-function showPinState (on) {
-  pinButton.setAttribute('aria-pressed', String(!!on))
-  pinButton.title = on
+function showOnTopState (on) {
+  onTopButton.setAttribute('aria-pressed', String(!!on))
+  onTopButton.title = on
     ? '항상 위에 보이는 중 — 눌러서 해제합니다'
     : '다른 창 뒤로 갈 수 있음 — 눌러서 항상 위에 고정합니다'
 }
 
-pinButton.addEventListener('click', async () => {
+onTopButton.addEventListener('click', async () => {
   // 이 창이 어느 메모인지 알기 전에는 저장할 곳이 없다.
   if (!noteId) return
-  const next = pinButton.getAttribute('aria-pressed') !== 'true'
+  const next = onTopButton.getAttribute('aria-pressed') !== 'true'
   // 먼저 그려 반응이 즉각 보이게 하고, 저장된 값이 오면 그것으로 다시 맞춘다 —
   // 색 스와치, 서체 입력칸과 같은 관례다.
-  showPinState(next)
+  showOnTopState(next)
   try {
-    showPinState(await window.keepSticky.setAlwaysOnTop(noteId, next))
+    showOnTopState(await window.keepSticky.setAlwaysOnTop(noteId, next))
   } catch {
     // 저장에 실패했다면 단추가 거짓말을 하고 있으면 안 된다. 실제 값을 다시 읽어
     // 맞춘다(그것마저 실패하면 건드리지 않는다 — 마지막으로 그린 값이 남는다).
-    window.keepSticky.getAlwaysOnTop(noteId).then(showPinState).catch(() => {})
+    window.keepSticky.getAlwaysOnTop(noteId).then(showOnTopState).catch(() => {})
   }
 })
 
@@ -1482,9 +1530,10 @@ function setEditingEnabled (enabled) {
   }
   setSwatchesEnabled(enabled)
   deleteButton.disabled = !enabled
-  // 보관도 Keep 으로 나가는 일이라 같이 잠긴다. 불러오지 못한 창에서는 지금
-  // 보관 상태가 무엇인지조차 모르므로 토글이 무엇을 뒤집는지 알 수 없다.
+  // 보관과 고정도 Keep 으로 나가는 일이라 같이 잠긴다. 불러오지 못한 창에서는
+  // 지금 상태가 무엇인지조차 모르므로 토글이 무엇을 뒤집는지 알 수 없다.
   archiveButton.disabled = !enabled
+  pinnedButton.disabled = !enabled
   // 폰에서 만든 진짜 List 노트에서는 줄의 종류를 바꿀 수 없다 — 모든 줄이
   // 항목이고 그래야만 한다.
   lineToggle.disabled = !enabled || isNativeList
@@ -1643,7 +1692,7 @@ window.keepSticky.noteId().then(async (id) => {
   // 압정도 서체와 같다 — state.json 에만 있고 Keep 을 거치지 않으므로 아래
   // list_notes 를 기다리지 않는다. 불러오기가 실패해 편집이 잠긴 창에서도
   // 이 메모를 뒤로 보낼 수는 있어야 한다.
-  window.keepSticky.getAlwaysOnTop(id).then(showPinState).catch(() => {})
+  window.keepSticky.getAlwaysOnTop(id).then(showOnTopState).catch(() => {})
   status.textContent = '불러오는 중'
   const { notes } = await window.keepSticky.listNotes()
   const note = notes.find((n) => n.id === id)
@@ -1685,6 +1734,8 @@ window.keepSticky.noteId().then(async (id) => {
   // 보관 여부도 Keep 에서 온다. 보관함에서 열어 본 메모라면 눌린 상태로 뜨고,
   // 그 상태에서 [보관] 을 누르면 해제가 된다.
   showArchiveState(note.archived)
+  // 고정도 마찬가지다. 폰에서 고정해 둔 메모를 열면 [고정] 이 눌린 채로 뜬다.
+  showPinnedState(note.pinned)
   bookmarkText = currentBookmarkText()
   // 여기가 편집이 열리는 유일한 지점이다. 색 변경([모양] 패널의 스와치)과
   // [삭제] 도 같이 열린다 — 둘 다 "이 메모를 실제로 받아왔다"를 전제로 한다.
