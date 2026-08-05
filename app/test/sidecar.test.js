@@ -95,13 +95,47 @@ test('재시작 한도를 넘으면 onRestart 를 부르지 않는다', async ()
   s.stop()
 })
 
-test('죽은 사이드카에 호출하면 앱을 죽이지 않고 SIDECAR_DEAD 로 거부한다', async () => {
-  // 한도를 넘긴 뒤에도 this.proc 는 죽은 자식을 가리킨 채 남는다. 가드가
-  // 없으면 그 stdin 에 쓰는 순간 메인 프로세스의 uncaughtException 이 된다.
-  const s = spawnFake({ timeoutMs: 5000, maxRestarts: 0 })
+test('한도를 넘겨 죽은 뒤에도 다음 요청이 되살린다', async () => {
+  // **실제로 겪은 경로다.** 시스템 자원이 말라 프로세스를 못 띄우는 동안
+  // 사이드카가 연달아 죽어 예산이 소진됐고, 자원이 회복된 뒤에도 앱이 영영
+  // 죽은 상태로 남아 목록도 저장도 동기화도 되지 않았다. 되살릴 길이 앱
+  // 재시작뿐이면 그것은 고장이다.
+  const s = spawnFake({ timeoutMs: 5000, maxRestarts: 0, reviveCooldownMs: 0 })
   s.call('die').catch(() => {})
   await new Promise((r) => setTimeout(r, 150))
-  await assert.rejects(s.call('echo', { n: 1 }), (err) => err.code === 'SIDECAR_DEAD')
+
+  const res = await s.call('echo', { n: 7 })
+  assert.strictEqual(res.n, 7, '되살아나 응답해야 한다')
+  s.stop()
+})
+
+test('되살리기에는 쿨다운이 있다 — 진짜 고장에 시스템을 두드리지 않는다', async () => {
+  // 원인이 일시적이지 않다면 요청마다 프로세스를 새로 띄우게 되고, 그것이
+  // 바로 자원을 마르게 한 그 상황을 더 나쁘게 만든다. 쿨다운 안에서는
+  // 앱을 죽이지 않고 SIDECAR_DEAD 로 거부한다(죽은 stdin 에 쓰지 않는다).
+  const s = spawnFake({ timeoutMs: 5000, maxRestarts: 0, reviveCooldownMs: 60000 })
+  s.call('die').catch(() => {})
+  await new Promise((r) => setTimeout(r, 150))
+  await s.call('echo', { n: 1 }) // 첫 되살리기는 언제나 허용된다
+
+  s.call('die').catch(() => {})
+  await new Promise((r) => setTimeout(r, 150))
+  await assert.rejects(s.call('echo', { n: 2 }), (err) => err.code === 'SIDECAR_DEAD')
+  s.stop()
+})
+
+test('오래 살아 있다 죽으면 재시작 예산이 되돌아온다', async () => {
+  // maxRestarts 는 **연달아 빠르게** 죽는 것(crash loop)의 한도여야 한다.
+  // 예전에는 앱 수명 전체를 통틀어 3회였고, 그래서 몇 시간에 걸쳐 어쩌다 세 번
+  // 죽은 앱이 그 뒤로 영영 자동 재시작을 못 받았다.
+  // healthyUptimeMs: 0 이면 모든 죽음이 "잘 살다 죽은 것"으로 취급된다.
+  const s = spawnFake({ timeoutMs: 5000, maxRestarts: 1, healthyUptimeMs: 0 })
+  for (let i = 0; i < 3; i++) {
+    s.call('die').catch(() => {})
+    await new Promise((r) => setTimeout(r, 150))
+  }
+  assert.strictEqual(s.restarts, 1, '매번 회복되므로 누적되지 않는다')
+  assert.strictEqual((await s.call('echo', { n: 9 })).n, 9, '세 번 죽고도 살아 있다')
   s.stop()
 })
 

@@ -6,6 +6,14 @@ const readline = require('node:readline')
 // 라 이 링버퍼 말고는 파이썬 쪽 실패를 볼 수 있는 경로가 없다.
 const STDERR_TAIL_LINES = 20
 
+// 이만큼 살아 있었으면 "제대로 떴다"고 본다. 그 뒤에 죽는 것은 연쇄 실패가
+// 아니라 별개의 사고이므로 재시작 예산을 되돌려 준다.
+const HEALTHY_UPTIME_MS = 30000
+
+// 예산을 다 쓴 뒤, 다음 요청이 되살리기를 시도하기까지 기다리는 시간. 진짜로
+// 고장 났을 때 요청마다 프로세스를 새로 띄우며 시스템을 두드리지 않게 한다.
+const REVIVE_COOLDOWN_MS = 5000
+
 /**
  * Python 사이드카와 줄 단위 JSON-RPC 로 대화한다.
  * 이 클래스는 배관만 안다. Keep 도메인(노트, 라벨, 색상)은 모른다.
@@ -16,12 +24,22 @@ class Sidecar {
     maxRestarts = 3,
     onDead = null,
     onRestart = null,
-    stderrTailLines = STDERR_TAIL_LINES
+    stderrTailLines = STDERR_TAIL_LINES,
+    healthyUptimeMs = HEALTHY_UPTIME_MS,
+    reviveCooldownMs = REVIVE_COOLDOWN_MS
   } = {}) {
     this.command = command
     this.args = args
     this.timeoutMs = timeoutMs
     this.maxRestarts = maxRestarts
+    // maxRestarts 는 **연달아 빠르게** 죽는 것(crash loop)의 한도다. 이만큼
+    // 살아 있다 죽은 것은 그 연쇄에 넣지 않는다 — 예전에는 앱 수명 전체를
+    // 통틀어 3회였고, 그래서 몇 시간에 걸쳐 어쩌다 세 번 죽은 앱이 그 뒤로
+    // 영영 되살아나지 못했다.
+    this.healthyUptimeMs = healthyUptimeMs
+    this.reviveCooldownMs = reviveCooldownMs
+    this.startedAt = 0
+    this.lastReviveAt = 0
     this.onDead = onDead
     // 재시작된 프로세스는 백지 상태다(set_account 이전). 감독자가 세션 상태를
     // 다시 세울 기회를 여기서 준다 — 이게 없으면 "재시작 = 영구 고장"이 된다.
@@ -36,6 +54,7 @@ class Sidecar {
   }
 
   start () {
+    this.startedAt = Date.now()
     this.proc = spawn(this.command, this.args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       // keep_service.py 는 진입점에서 stdin/stdout 을 UTF-8 로 reconfigure
@@ -67,22 +86,66 @@ class Sidecar {
   _onExit (message) {
     this._rejectAll('SIDECAR_DEAD', message)
     if (this.stopped) return
+
+    // 한참 잘 돌다가 죽은 것은 연쇄 실패가 아니다. 예산을 되돌려 준다.
+    // 이 한 줄이 maxRestarts 를 "앱 수명 동안 3번"에서 "연달아 3번"으로 바꾼다.
+    if (Date.now() - this.startedAt >= this.healthyUptimeMs) this.restarts = 0
+
     if (this.restarts >= this.maxRestarts) {
-      // 계속 죽는다면 재시작해봐야 같은 결과다. 사용자에게 알리고 멈춘다.
+      // 연달아 즉시 죽는다면 지금 다시 띄워봐야 같은 결과다. 여기서는 멈추고
+      // 사용자에게 알린다 — 다만 **영구히 포기하지는 않는다**. 다음 요청이
+      // 오면 call() 이 쿨다운을 보고 되살리기를 한 번 시도한다. 원인이
+      // 일시적이었다면(예: 시스템 자원이 말라 프로세스를 못 띄우던 순간)
+      // 그때 되살아난다. 예전에는 여기서 그냥 돌아가 앱이 재시작 전까지
+      // 영영 죽은 상태로 남았다.
       if (this.onDead) this.onDead(this._withStderrTail(message))
       return
     }
     this.restarts++
     this.start()
-    // 프로세스는 살아났지만 세션 상태는 백지다. 감독자가 set_account 를 다시
-    // 보내지 못하면 이후 모든 호출이 AUTH_REQUIRED 로 떨어진다. 실패해도 여기서
-    // 할 수 있는 일은 없으므로 삼킨다 — 다음 실제 호출이 사용자에게 알린다.
-    if (this.onRestart) {
-      try {
-        const result = this.onRestart(this)
-        if (result && typeof result.catch === 'function') result.catch(() => {})
-      } catch { /* 무시 */ }
-    }
+    this._notifyRestart()
+  }
+
+  /**
+   * 재시작 뒤 감독자에게 세션을 다시 세울 기회를 준다.
+   *
+   * 프로세스는 살아났지만 세션 상태는 백지다(set_account 이전). 감독자가
+   * 그것을 다시 보내지 못하면 이후 모든 호출이 AUTH_REQUIRED 로 떨어진다.
+   * 실패해도 여기서 할 수 있는 일은 없으므로 삼킨다 — 다음 실제 호출이
+   * 사용자에게 알린다.
+   *
+   * **동기적으로 부르는 것이 중요하다.** onRestart 안의 call() 은 stdin 에
+   * 그 자리에서 줄을 쓰므로, 되살리기 직후 이어지는 요청보다 set_account 가
+   * 반드시 먼저 나간다.
+   */
+  _notifyRestart () {
+    if (!this.onRestart) return
+    try {
+      const result = this.onRestart(this)
+      if (result && typeof result.catch === 'function') result.catch(() => {})
+    } catch { /* 무시 */ }
+  }
+
+  /**
+   * 쓸 수 있는 stdin 을 돌려준다. 죽어 있으면 되살리기를 한 번 시도한다.
+   *
+   * 되살리기에 쿨다운을 두는 이유: 원인이 진짜 고장이면 요청마다 프로세스를
+   * 새로 띄우며 시스템을 두드리게 된다. 반대로 쿨다운만 지나면 몇 번이고 다시
+   * 시도한다 — 사용자가 [동기화] 를 누르는 것이 곧 "다시 해봐 달라"는 뜻이다.
+   *
+   * @returns {object|null} 쓸 수 있는 stdin, 없으면 null
+   */
+  _writableStdin () {
+    const usable = (p) => p && p.stdin && !p.stdin.destroyed && p.stdin.writable
+    if (usable(this.proc)) return this.proc.stdin
+    if (this.stopped) return null
+    if (Date.now() - this.lastReviveAt < this.reviveCooldownMs) return null
+
+    this.lastReviveAt = Date.now()
+    this.restarts = 0 // 사람이 다시 부른 것이다. 연쇄 실패 계수는 새로 센다.
+    this.start()
+    this._notifyRestart()
+    return usable(this.proc) ? this.proc.stdin : null
   }
 
   _onLine (line) {
@@ -136,13 +199,12 @@ class Sidecar {
       }, this.timeoutMs)
       this.pending.set(id, { resolve, reject, timer })
       try {
-        const stdin = this.proc && this.proc.stdin
         // 재시작 한도를 넘긴 뒤에도 this.proc 는 죽은 자식을 가리킨 채 남는다.
         // 그 stdin 에 쓰면 응답이 영영 오지 않아 30초 타임아웃까지 매달리거나,
-        // 스트림이 'error' 를 던져 앱 전체를 날린다. 쓰기 전에 확인한다.
-        if (!stdin || stdin.destroyed || !stdin.writable) {
-          throw new Error('사이드카가 실행 중이 아니다')
-        }
+        // 스트림이 'error' 를 던져 앱 전체를 날린다. 쓰기 전에 확인하고,
+        // 죽어 있으면 _writableStdin 이 되살리기를 한 번 시도한다.
+        const stdin = this._writableStdin()
+        if (!stdin) throw new Error('사이드카가 실행 중이 아니다')
         stdin.write(JSON.stringify({ id, method, params }) + '\n')
       } catch (err) {
         this.pending.delete(id)
