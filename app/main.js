@@ -591,6 +591,20 @@ function createNoteWindow (noteId) {
   win.on('moved', persistBounds)
   win.on('resized', persistBounds)
 
+  // 바탕화면 보기(Win+D)나 [모두 최소화]가 책갈피를 내려도 즉시 되돌린다.
+  //
+  // 접힌 창에는 최소화 단추가 없다(상단 바 자체가 감춰진다). 그래서 여기 오는
+  // 최소화는 사용자가 이 창에 대고 시킨 일이 아니라 셸이 전체에 건 것뿐이다 —
+  // 되돌려도 사용자의 뜻을 거스르지 않는다. 펼친 포스트잇은 건드리지 않는다.
+  //
+  // 맨 앞으로 고정하는 것(foldNote)과 별개로 이 그물이 필요한 이유: 바탕화면
+  // 보기가 창을 가리는 경로와 최소화하는 경로가 윈도우 버전·설정에 따라 갈리고,
+  // 어느 쪽이든 손잡이가 사라지면 사용자는 메모를 다시 펼칠 수 없다.
+  win.on('minimize', () => {
+    if (!isFolded(noteId) || win.isDestroyed()) return
+    win.restore()
+  })
+
   // 렌더러는 자기가 접혀 있는지 모르는 채로 뜬다. 로드가 끝나는 시점에 알려야
   // 재시작 복원(접힌 채 저장된 메모)에서도 책갈피 모습으로 그려진다.
   win.webContents.on('did-finish-load', () => sendFoldState(noteId))
@@ -725,6 +739,21 @@ function foldNote (noteId) {
 
   // 책갈피는 44px 짜리 띠다. 테두리를 잡아 끄는 실수로 찌그러지지 않게 한다.
   win.setResizable(false)
+
+  // **책갈피는 압정 설정과 무관하게 언제나 맨 앞이다.**
+  //
+  // 펼친 포스트잇의 압정은 "이 메모를 다른 창 위에 띄울까"라는 취향이고 끄고
+  // 싶을 이유가 충분하다. 책갈피는 다르다 — 화면 가장자리에 붙은 44px 짜리
+  // **손잡이**이고, 가려지면 다시 펼칠 방법 자체가 사라진다. 옵션일 수 없다.
+  //
+  // state.json 의 alwaysOnTop 은 건드리지 않는다. 펼칠 때 그 값으로 되돌리므로
+  // 사용자가 고른 압정 설정은 그대로 남는다.
+  //
+  // 'screen-saver' 단계인 것은 바탕화면 보기(Win+D) 때문이다. 평범한 topmost 는
+  // 바탕화면이 앞으로 나오면 그 뒤로 가려진다 — 실제 앱의 책갈피 창을
+  // 들여다보니 TOPMOST 가 꺼져 있어 정확히 그 일이 벌어지고 있었다.
+  win.setAlwaysOnTop(true, 'screen-saver')
+
   relayoutBookmarks()
   sendFoldState(noteId)
   return true
@@ -742,6 +771,10 @@ function unfoldNote (noteId) {
 
   if (win && !win.isDestroyed()) {
     win.setResizable(true)
+    // 접는 동안 강제로 걸어 둔 맨 앞을 사용자가 고른 압정 설정으로 되돌린다.
+    // state.json 의 값은 접는 동안에도 건드리지 않았으므로 그대로 쓴다 —
+    // 압정을 꺼 둔 메모는 펼치면 다시 다른 창 뒤로 갈 수 있다.
+    win.setAlwaysOnTop(state.alwaysOnTop !== false)
     win.setBounds({ x: state.x, y: state.y, width: state.w, height: state.h })
   }
   // 아직 얼어 있는 채로 알린다. 위 setBounds 가 만드는 moved/resized 는 물론
@@ -1187,7 +1220,12 @@ app.whenReady().then(async () => {
     const win = noteWindows.get(id)
     // 창이 이미 사라진 뒤에 늦게 도착한 요청이어도 state.json 에는 남는다 —
     // 다음에 그 메모를 띄울 때 createNoteWindow 가 이 값을 읽는다.
-    if (win && !win.isDestroyed()) win.setAlwaysOnTop(next)
+    //
+    // **접혀 있으면 창에는 적용하지 않는다.** 책갈피는 압정과 무관하게 언제나
+    // 맨 앞이어야 하는데(foldNote 참고), 여기서 창에 그대로 걸면 그 강제를
+    // 덮어 손잡이가 가려진다. 설정은 저장해 두었다가 unfoldNote 가 펼칠 때
+    // 적용한다.
+    if (win && !win.isDestroyed() && !isFolded(id)) win.setAlwaysOnTop(next)
     return saved.alwaysOnTop !== false
   })
 
