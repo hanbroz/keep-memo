@@ -44,7 +44,7 @@ function topLevelDeclarations (file) {
   return out
 }
 
-for (const htmlFile of ['note.html', 'list.html', 'setup-email.html']) {
+for (const htmlFile of ['note.html', 'list.html', 'setup-email.html', 'manual-login.html']) {
   test(`${htmlFile}: 함께 실리는 스크립트들의 최상위 이름이 겹치지 않는다`, () => {
     const owners = new Map() // name -> { file, kind }
     const clashes = []
@@ -66,6 +66,34 @@ for (const htmlFile of ['note.html', 'list.html', 'setup-email.html']) {
       `같은 창에 실리는 스크립트끼리 최상위 이름이 겹친다:\n  ${clashes.join('\n  ')}`)
   })
 }
+
+test('렌더러가 부르는 window.keepSticky.* 는 전부 preload 가 노출한다', () => {
+  // preload 에 없는 이름을 부르면 undefined 를 호출하는 것이라 그 자리에서
+  // TypeError 가 나고, 그 창의 기능 하나가 통째로 죽는다.
+  //
+  // **수동 로그인 창이 이 검사가 필요한 이유다.** 그 창은 내장 로그인이 실패한
+  // 뒤에만 뜬다 — 즉 오타가 있어도 평소에는 아무도 모르고, 다른 모든 길이 이미
+  // 막혀 그 창이 마지막 통로가 된 바로 그 순간에만 드러난다. 창을 띄우지 않고
+  // 잡을 수 있는 검사이므로 여기서 잡는다.
+  const preload = fs.readFileSync(path.join(RENDERER, '..', 'preload.js'), 'utf8')
+  const surface = preload.match(/exposeInMainWorld\('keepSticky',\s*\{([\s\S]*)\}\)/)
+  assert.ok(surface, 'preload.js 에서 keepSticky 표면을 찾지 못했다')
+  // 표면의 항목은 두 칸 들여쓰기의 `이름:` 이다. 주석 줄(`  //`)은 걸리지 않는다.
+  const exposed = new Set(
+    [...surface[1].matchAll(/^ {2}([A-Za-z_$][\w$]*)\s*:/gm)].map((m) => m[1]))
+  // 정규식이 헛돌아 빈 집합이 되면 이 검사는 아무것도 안 하면서 통과한다.
+  assert.ok(exposed.size > 10, `preload 표면을 제대로 읽지 못했다 (${exposed.size}개)`)
+
+  const missing = []
+  for (const file of fs.readdirSync(RENDERER).filter((f) => f.endsWith('.js'))) {
+    const src = fs.readFileSync(path.join(RENDERER, file), 'utf8')
+    for (const m of src.matchAll(/window\.keepSticky\.([A-Za-z_$][\w$]*)/g)) {
+      if (!exposed.has(m[1])) missing.push(`${file}: ${m[1]}`)
+    }
+  }
+  assert.deepStrictEqual(missing, [],
+    `preload 이 노출하지 않은 이름을 부른다:\n  ${missing.join('\n  ')}`)
+})
 
 test('note.html 은 note.js 보다 먼저 순수 로직 모듈들을 부른다', () => {
   // note.js 는 require() 없이 이 전역들을 그대로 쓴다. 순서가 뒤집히면

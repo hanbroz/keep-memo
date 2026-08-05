@@ -69,7 +69,13 @@ contextBridge.exposeInMainWorld('keepSticky', {
   // main 이 접힘 상태를 알려준다. 재시작 복원처럼 렌더러가 스스로 알 수 없는
   // 경로가 있으므로 창이 뜬 직후에도 한 번 온다. 이벤트 객체는 넘기지 않는다.
   onFoldState: (cb) => ipcRenderer.on('notes:foldState', (_e, folded) => cb(!!folded)),
-  exchangeCookie: (token) => ipcRenderer.invoke('auth:exchange', token),
+  // 수동 로그인 창(manual-login.html) 전용. 내장 로그인이 실패했을 때만 뜨는
+  // 마지막 통로다. **받는 쪽 핸들러는 그 창이 떠 있는 동안에만 등록되어 있다**
+  // (main.js 의 promptForManualToken) — 예전의 'auth:exchange' 처럼 영구
+  // 등록해 두면 이 창이 뜬 적도 없는데 모든 렌더러가 토큰 교환을 부를 수 있다.
+  // 붙여넣은 값의 검증도 항상 main 이 한다 — 여기 있는 검사는 즉시 안내를
+  // 띄우기 위한 것일 뿐이다(setup:submitEmail 과 같은 관례).
+  submitManualToken: (token) => ipcRenderer.invoke('auth:manualToken', token),
   // 저장된 자격증명이 구글에서 무효가 됐을 때 다시 로그인한다. 로그인 창을
   // 띄우고 새 토큰을 keyring 에 넣는 일은 전부 main 이 한다 — 렌더러는 토큰을
   // 보지도, 만지지도 않는다. 트레이 메뉴의 [다시 로그인] 과 같은 함수로 간다.

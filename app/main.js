@@ -12,7 +12,9 @@ const { Store, DEFAULT_NOTE_STATE, NOTE_MIN_WIDTH } = require('./store')
 // 저장된 창 자리를 지금의 화면 구성에 맞춘다. 모니터를 뽑았을 때 창이 보이지
 // 않는 곳에 뜨는 것을 막는 유일한 장치다(목록 창과 포스트잇이 같이 쓴다).
 const { fitWindowBounds } = require('./window-bounds')
-const { createLoginWindow, pollCookie } = require('./login')
+// COOKIE_PREFIX 는 수동 폴백에서도 쓴다 — 사용자가 붙여넣은 것이 정말 oauth_token
+// 인지 main 에서 확인해야 하고, 그 접두사를 두 곳에 적으면 언젠가 갈라진다.
+const { createLoginWindow, pollCookie, COOKIE_PREFIX } = require('./login')
 const { resolveSidecarCommand } = require('./sidecar-path')
 const { validateEmail } = require('./email-validate')
 const { packBookmarks, bookmarkAnchorFromDrop, BOOKMARK } = require('./bookmark-layout')
@@ -317,6 +319,21 @@ function flushAllNotes () {
  * 창이 떴다가 그냥 실패하는" 것으로 보이고, 몇 번을 다시 눌러도 같다. 재로그인이
  * 생기면서 처음으로 문제가 되는 지점이라 여기 한 곳에서 지우고 시작한다.
  *
+ * **내장 경로가 실패하면 수동 붙여넣기 창으로 넘어간다**(설계 문서 §8.1 의 폴백).
+ * 실패는 두 모양이다: 쿠키를 못 잡았거나(창을 닫았다, 시간이 지났다, 또는 구글이
+ * 이 페이지를 막았다), 잡았는데 교환이 실패했거나(1회용 토큰이 60초 안에 만료된다 —
+ * 가장 흔한 실패다). 둘 다 "내장 경로로는 토큰을 얻지 못했다"는 같은 뜻이므로 같은
+ * 폴백으로 간다.
+ *
+ * 이 폴백이 없으면 구글이 EmbeddedSetup 을 막는 날 사용자가 빠져나올 길이 없다.
+ * ensureAuth 실패는 '인증 실패 → 종료'로 끝나고, 다시 켜도 막힌 그 창을 다시
+ * 띄울 뿐이라 "인증 실패 → 종료"가 영원히 반복된다.
+ *
+ * 교환 실패를 여기서 잡는 것이 중요하다. 예전에는 그대로 던졌는데, 시작 경로의
+ * ensureAuth() 에는 이것을 받는 곳이 없어서(app.whenReady().then() 에 .catch 가
+ * 없다) 처리되지 않은 거절이 되고, 앱은 트레이 아이콘과 사이드카만 남긴 채 창
+ * 하나 없이 멈춰 있었다 — 이 파일이 곳곳에서 막으려는 그 유령 상태다.
+ *
  * @returns {Promise<boolean>} 새 토큰을 받아 저장했는가.
  */
 async function doLogin () {
@@ -325,13 +342,79 @@ async function doLogin () {
   const win = createLoginWindow(BrowserWindow)
   try {
     const token = await pollCookie(loginSession, { intervalMs: 1000, timeoutMs: 300000 })
-    if (!token) return false
-    await sidecar.call('exchange_cookie', { email: accountEmail, oauth_token: token })
-    return true
+    if (token) {
+      await sidecar.call('exchange_cookie', { email: accountEmail, oauth_token: token })
+      return true
+    }
+  } catch {
+    // 교환 실패. 아래 수동 폴백으로 간다 — 거기서 다시 시도할 수 있다.
   } finally {
     // 어떤 경로로 끝나든 로그인 창은 닫는다. 사용자가 이미 ✕ 로 닫았을 수 있다.
+    // **수동 창을 열기 전에 반드시 닫는다** — 두 장이 같이 떠 있으면 안 된다.
     if (!win.isDestroyed()) win.close()
   }
+  return promptForManualToken()
+}
+
+function createManualLoginWindow () {
+  const win = new BrowserWindow({
+    width: 600,
+    height: 560,
+    title: '수동 로그인',
+    webPreferences: { preload: PRELOAD, contextIsolation: true, nodeIntegration: false }
+  })
+  win.loadFile(path.join(__dirname, 'renderer', 'manual-login.html'))
+  return win
+}
+
+/**
+ * 내장 로그인이 실패했을 때의 마지막 통로. 사용자가 브라우저 개발자도구에서
+ * 직접 복사한 oauth_token 을 받아 교환한다. UX 는 나쁘지만 확실히 동작한다.
+ *
+ * **promptForEmail 과 같은 모양이다**: 창이 사는 동안에만 IPC 핸들러를 걸고,
+ * 성공이든 창 닫힘이든 먼저 오는 쪽이 약속을 푼다(finish 는 멱등하다).
+ *
+ * 그 수명 한정이 요점이다. 예전에는 'auth:exchange' 가 whenReady 에서 영구
+ * 등록되어, 이 창이 뜬 적이 없는데도 모든 렌더러(포스트잇 포함)가 임의의
+ * 문자열을 토큰으로 교환해 달라고 부를 수 있었다 — preload 의 표면은 좁을수록
+ * 좋다는 이 앱의 원칙과 어긋난다. 이제 그 통로는 이 창이 떠 있는 동안에만 있다.
+ *
+ * 붙여넣은 값의 검증도 여기서 한다. 렌더러도 같은 검사를 하지만(즉시 안내를
+ * 띄우기 위해서다) 렌더러는 신뢰 경계의 바깥쪽이다 — 그쪽 검사만으로는 검사가
+ * 아니다. url-open.js / email-validate.js 와 같은 관례다.
+ *
+ * @returns {Promise<boolean>} 새 토큰을 받아 저장했는가.
+ */
+function promptForManualToken () {
+  return new Promise((resolve) => {
+    const win = createManualLoginWindow()
+    let settled = false
+    const finish = (ok) => {
+      if (settled) return // 성공 경로와 창 닫힘 경로가 겹쳐 불릴 수 있다
+      settled = true
+      ipcMain.removeHandler('auth:manualToken')
+      resolve(ok)
+    }
+
+    ipcMain.handle('auth:manualToken', async (_e, rawToken) => {
+      const token = typeof rawToken === 'string' ? rawToken.trim() : ''
+      if (!token.startsWith(COOKIE_PREFIX)) {
+        return { ok: false, message: `${COOKIE_PREFIX} 로 시작해야 합니다. 다른 쿠키를 복사했을 수 있습니다.` }
+      }
+      try {
+        await sidecar.call('exchange_cookie', { email: accountEmail, oauth_token: token })
+      } catch (err) {
+        // 창을 닫지 않는다. 토큰이 만료됐을 뿐이면 다시 복사해 넣으면 된다.
+        return { ok: false, message: err.message }
+      }
+      finish(true)
+      if (!win.isDestroyed()) win.close()
+      return { ok: true }
+    })
+
+    // 사용자가 ✕ 로 포기했다. 부르는 쪽(ensureAuth)이 종료까지 책임진다.
+    win.on('closed', () => finish(false))
+  })
 }
 
 // 로그인 창이 이미 떠 있는가. 재로그인은 트레이 메뉴와 [동기화] 실패 두 곳에서
@@ -1229,7 +1312,7 @@ app.whenReady().then(async () => {
   // (keep_service.py 의 sync_notes 주석에 실계정으로 확인한 근거가 있다).
   //
   // 실패(네트워크, 만료된 세션, 죽은 사이드카)는 던지지 않고 { ok:false }
-  // shape 로 돌려준다 — auth:exchange 와 같은 관례다. ipcMain.handle 이
+  // shape 로 돌려준다 — notes:update 와 같은 관례다. ipcMain.handle 이
   // 던지면 렌더러에는 message 만 건너가고 err.code 는 사라지므로, 코드를
   // 보존해 렌더러가 AUTH_REQUIRED 를 다른 실패와 구별해 보여줄 수 있게 한다.
   ipcMain.handle('notes:sync', async () => {
@@ -1257,6 +1340,11 @@ app.whenReady().then(async () => {
     return { ok: true, notes }
   })
 
+  // **만들기 핸들러는 이 하나뿐이다.** 이 앱이 만드는 메모는 언제나 text 노트다 —
+  // 체크리스트는 메모의 종류가 아니라 본문 안의 텍스트 규약이기 때문이다
+  // (app/renderer/line-model.js). 예전에 있던 notes:createChecklist 와 사이드카의
+  // create_checklist 는 그래서 없앴다.
+  //
   // 실패를 던지지 않고 { ok:false } shape 로 돌려준다 — notes:sync / notes:update
   // 과 같은 관례다. ipcMain.handle 이 던지면 렌더러에는 message 만 건너가고
   // err.code 는 사라지므로, 목록 창이 AUTH_REQUIRED 를 다른 실패와 구별할 수 없다.
@@ -1271,19 +1359,8 @@ app.whenReady().then(async () => {
     }
   })
 
-  // 만들기 핸들러는 위 하나뿐이다. 이 앱이 만드는 메모는 언제나 text 노트다 —
-  // 체크리스트는 메모의 종류가 아니라 본문 안의 텍스트 규약이기 때문이다
-  // (app/renderer/line-model.js). 예전에 있던 notes:createChecklist 와 사이드카의
-  // create_checklist 는 그래서 없앴다.
-  ipcMain.handle('auth:exchange', async (_e, token) => {
-    try {
-      await sidecar.call('exchange_cookie', { email: accountEmail, oauth_token: token })
-      return { ok: true }
-    } catch (err) {
-      return { ok: false, message: err.message }
-    }
-  })
-
+  // 토큰 교환('auth:exchange')은 여기 없다. 그 통로는 수동 로그인 창이 떠 있는
+  // 동안에만 사는 'auth:manualToken' 으로 옮겼다 — 이유는 promptForManualToken 에.
   ipcMain.handle('notes:currentId', (event) => windowIdOf(event))
 
   // 창 하나당 리스너를 새로 달면 포스트잇이 열 장만 넘어도 리스너 누수 경고가
@@ -1482,7 +1559,7 @@ app.whenReady().then(async () => {
     } catch (err) {
       // ipcMain.handle 이 던지면 렌더러에는 message 만 건너간다 (err.code 는
       // 사라진다). 그러면 재로그인 필요 여부를 렌더러가 알 수 없다. 그래서
-      // 여기서 잡아 shape 로 돌려준다 — auth:exchange 와 같은 관례다.
+      // 여기서 잡아 shape 로 돌려준다 — notes:sync 와 같은 관례다.
       // 저장 자체가 실패했으므로 이 편집은 서버에 도달하지 못했다. 충돌과
       // 같은 방식으로 conflictBackup 에 보관해 ✕ 를 눌러도 사라지지 않게 한다.
       store.setNote(id, { conflictBackup: sentContent })
