@@ -29,6 +29,14 @@ const listEl = document.getElementById('list')
 const toastEl = document.getElementById('toast')
 const searchEl = document.getElementById('search')
 const syncEl = document.getElementById('sync')
+const brandVerEl = document.getElementById('brand-ver')
+const markTplEl = document.getElementById('tpl-marks')
+// 머리의 숫자 표. 세는 일은 note-stats.js 가 한다.
+const statEls = {
+  pinned: document.getElementById('stat-pinned'),
+  archived: document.getElementById('stat-archived'),
+  total: document.getElementById('stat-total')
+}
 const labelFilterEl = document.getElementById('label-filter')
 const labelsPanelEl = document.getElementById('labels')
 const labelsToggleEl = document.getElementById('labels-toggle')
@@ -80,11 +88,66 @@ function showToast (message, { hold = false } = {}) {
 
 function showEmpty (message) {
   const li = document.createElement('li')
+  // 안내 문구는 메모가 아니다 — 종이도 그림자도 기울기도 붙이지 않는다.
+  li.className = 'no-card'
   const msg = document.createElement('span')
   msg.className = 'empty'
   msg.textContent = message
   li.append(msg)
   listEl.append(li)
+}
+
+/**
+ * 제목 아래 한 줄. 작성일과 이 메모에 붙은 라벨 이름들이다.
+ *
+ * 날짜는 **정렬 기준과 같은 값**을 보여준다. 작성일로 줄을 세워 놓고 수정일을
+ * 찍으면 날짜가 뒤죽박죽으로 보여 목록이 안 맞춰진 것처럼 읽힌다. created 가
+ * 없는 응답(옛 사이드카)에서는 예전처럼 updated 를 쓴다.
+ *
+ * 고정/보관은 여기 넣지 않는다 — 행 오른쪽 그림쇠가 이미 말하고 있어서
+ * 겹쳐 적으면 좁은 줄에서 라벨 이름을 밀어낸다.
+ */
+function metaLineOf (note) {
+  const parts = []
+  const date = (note.created || note.updated || '').slice(0, 10)
+  if (date) parts.push(date)
+  for (const noteLabel of Array.isArray(note.labels) ? note.labels : []) {
+    if (noteLabel && noteLabel.name) parts.push(noteLabel.name)
+  }
+  return parts.join(' · ')
+}
+
+/**
+ * 이 메모의 고정·보관 표식을 만든다. 둘 다 아니면 null.
+ *
+ * 그림은 list.html 의 <template> 에서 복제해 온다 — JS 에서 SVG 를 조립하지
+ * 않으므로 innerHTML 경로가 생기지 않는다.
+ */
+function marksFor (note) {
+  if (!note.pinned && !note.archived) return null
+  const marks = markTplEl.content.firstElementChild.cloneNode(true)
+  if (!note.pinned) marks.querySelector('.mark-pin').remove()
+  if (!note.archived) marks.querySelector('.mark-arch').remove()
+  return marks
+}
+
+/**
+ * 머리의 숫자 표를 다시 쓴다. 세는 것은 **걸러 보이는 것이 아니라 전체**다 —
+ * 검색으로 목록이 짧아졌을 때 "내 메모가 몇 장인지"를 알려주는 것이 이 표의
+ * 쓸모이기 때문이다.
+ *
+ * 0 인 표는 감춘다. '고정 0' 은 알려주는 것이 없으면서 자리만 차지한다.
+ */
+function renderStats () {
+  const stats = countNoteStats(allNotes)
+  const write = (el, n, text) => {
+    el.hidden = n === 0
+    el.querySelector('.n').textContent = text
+  }
+  write(statEls.pinned, stats.pinned, `고정 ${stats.pinned}`)
+  write(statEls.archived, stats.archived, `보관 ${stats.archived}`)
+  // 전체는 0 이어도 보여준다. 메모가 없다는 것 자체가 알려줄 만한 사실이다.
+  statEls.total.querySelector('.n').textContent = `전체 ${stats.total}`
 }
 
 /** 지금의 검색어에 맞는 행만 다시 그린다. 체크 상태는 checkedIds 에서 온다. */
@@ -93,6 +156,7 @@ function render () {
   const shown = filterNotes(allNotes, query, labelFilterEl.value)
   renderedRows.length = 0
   listEl.textContent = ''
+  renderStats()
 
   if (shown.length === 0) {
     showEmpty(allNotes.length === 0
@@ -107,6 +171,11 @@ function render () {
     // 색 이름은 Keep 이 정한 12개 중 하나짜리 열거값이라 노트 id 와 달리 DOM
     // 속성에 둬도 된다 — 감출 것이 없고, 오히려 CSS 가 읽을 수 있어야 한다.
     if (note.color) li.dataset.color = note.color
+    // 쪽지처럼 조금씩 어긋난 각도. **행의 순서가 아니라 메모 자신**에서 나오므로
+    // (note-stats.js) 검색어를 칠 때마다 남은 행들이 통째로 다시 기울어지며
+    // 목록이 흔들리는 일이 없다. 값은 우리가 정한 열 개 중 하나뿐이라 사용자
+    // 데이터가 CSS 로 흘러드는 길이 아니다.
+    li.style.setProperty('--tilt', tiltFor(note.id))
 
     const label = document.createElement('label')
     label.className = 'row'
@@ -123,49 +192,38 @@ function render () {
       else checkedIds.delete(note.id)
     })
 
+    // 제목과 그 아래 한 줄(날짜 · 라벨)을 한 덩어리로 묶는다. 예전에는 날짜가
+    // 행 오른쪽의 제 칸을 쓰고 라벨이 제목 옆의 칩이었는데, 좁은 창에서 셋이
+    // 제목의 폭을 나눠 가져 제목이 먼저 잘렸다. 아래로 내리면 제목은 한 줄을
+    // 통째로 쓴다.
+    const text = document.createElement('span')
+    text.className = 'text'
+
     const title = document.createElement('span')
     title.className = 'title'
     title.textContent = titleOf(note)
     title.title = titleOf(note)
 
-    label.append(check, title)
+    // 라벨 이름은 Keep 에서 온 외부 데이터이므로 textContent 로만 넣는다
+    // (innerHTML 경로를 두지 않는다).
+    const meta = document.createElement('span')
+    meta.className = 'meta'
+    meta.textContent = metaLineOf(note)
+    meta.title = meta.textContent
 
-    // 왜 이 행이 위에 있는지를 표로 말해 준다. 묶음은 고정 → 보관 → 나머지이고
-    // 정렬은 사이드카가 한다(_serialize_for_list). 어느 쪽도 목록에서 감추지
-    // 않는다 — 감추면 이 앱에서 그 상태를 되돌릴 길이 사라진다.
+    text.append(title, meta)
+    label.append(check, text)
+    li.append(label)
+
+    // 왜 이 행이 위에 있는지를 그림쇠로 말해 준다. 묶음은 고정 → 보관 →
+    // 나머지이고 정렬은 사이드카가 한다(_serialize_for_list). 어느 쪽도
+    // 목록에서 감추지 않는다 — 감추면 이 앱에서 그 상태를 되돌릴 길이 사라진다.
     //
-    // 둘 다 달린 메모는 '고정'만 보여준다. 고정이 이긴 묶음이고, 44px 남짓한
-    // 행에 표를 두 개 붙이면 제목 자리를 잡아먹는다.
-    const tagText = note.pinned ? '고정' : (note.archived ? '보관' : '')
-    if (tagText) {
-      const tag = document.createElement('span')
-      tag.className = 'tag'
-      tag.textContent = tagText
-      label.append(tag)
-    }
+    // 예전에는 '고정'/'보관' 글자 알약이라 자리를 많이 먹어 둘 다 달린 메모는
+    // 하나만 보여줄 수밖에 없었다. 그림쇠는 둘이 나란히 서고도 제목을 밀지 않는다.
+    const marks = marksFor(note)
+    if (marks) li.append(marks)
 
-    // 이 메모가 어느 카테고리인지. 이름은 Keep 에서 온 외부 데이터이므로
-    // textContent 로만 넣는다(innerHTML 경로를 두지 않는다).
-    //
-    // 반복 변수를 noteLabel 로 둔 것은 취향이 아니다 — 위 행의 <label> 요소가
-    // 이미 label 이라, 여기서 label 을 쓰면 그것을 가려 칩이 자기 자신 안으로
-    // 들어간다.
-    for (const noteLabel of Array.isArray(note.labels) ? note.labels : []) {
-      const chip = document.createElement('span')
-      chip.className = 'label-chip'
-      chip.textContent = noteLabel.name
-      chip.title = noteLabel.name
-      label.append(chip)
-    }
-
-    const date = document.createElement('span')
-    date.className = 'date'
-    // 정렬 기준과 **같은 값**을 보여준다. 작성일로 줄을 세워 놓고 수정일을
-    // 찍으면 날짜 칸이 뒤죽박죽으로 보여 목록이 안 맞춰진 것처럼 읽힌다.
-    // created 가 없는 응답(옛 사이드카)에서는 예전처럼 updated 를 쓴다.
-    date.textContent = (note.created || note.updated || '').slice(0, 10)
-
-    li.append(label, date)
     listEl.append(li)
     renderedRows.push({ id: note.id, check })
   }
@@ -596,6 +654,12 @@ window.keepSticky.onNotesChanged(() => {
     showToast('목록을 새로 고치지 못했습니다.')
   })
 })
+
+// 이름표 옆의 버전. 실패해도 창은 그대로 쓸 수 있어야 하므로 기다리지 않고,
+// 못 받아오면 자리를 비워 둔다 — 없는 버전을 지어내는 것보다 낫다.
+window.keepSticky.buildStamp().then((stamp) => {
+  brandVerEl.textContent = stamp ? `ver. ${stamp}` : '개발 중'
+}).catch(() => {})
 
 // 저장된 설정을 IPC 로 읽어오기 전에 기본값을 먼저 입힌다. list.html 의 :root
 // 는 note.html / setup-email.html 과 같은 값을 유지해야 하므로(세 벌 동기),

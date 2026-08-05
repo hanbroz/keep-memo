@@ -384,6 +384,9 @@ function createListWindow () {
     minWidth: 360,
     minHeight: 320,
     title: listWindowTitle(),
+    // list.html 의 --paper 와 같은 값. 이것이 없으면 첫 그림이 그려지기 전까지
+    // 흰 사각형이 번쩍이는데, 종이색 창에서는 그 한 순간이 눈에 띈다.
+    backgroundColor: '#f2ede3',
     webPreferences: { preload: PRELOAD, contextIsolation: true, nodeIntegration: false }
   })
   listWindow = win
@@ -1240,6 +1243,11 @@ app.whenReady().then(async () => {
     win.close()
     return { ok: true }
   })
+
+  // 목록 창 머리에 적을 버전. 창 제목에도 있지만(listWindowTitle) 제목 표시줄은
+  // 창이 좁으면 잘린다 — 창 안에서는 언제나 온전히 읽혀야 한다. 개발 실행에는
+  // 스탬프가 없고, 그 사실을 감추지 않는 것도 창 제목과 같은 규칙이다.
+  ipcMain.handle('app:buildStamp', () => currentBuildStamp() || '')
 
   // 서체 설정. 검증과 기본값은 전부 store(=font-settings.js)가 한다.
   ipcMain.handle('settings:getFonts', () => store.getFontSettings())

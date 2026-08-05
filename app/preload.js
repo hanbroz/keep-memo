@@ -81,6 +81,8 @@ contextBridge.exposeInMainWorld('keepSticky', {
   // 렌더러에 넘기지 않는다 — sender 를 통해 IPC 표면이 새어나가면 안 된다.
   onFlushRequest: (cb) => ipcRenderer.on('notes:flush', () => cb()),
   flushDone: () => ipcRenderer.send('notes:flushed'),
+  // 목록 창 머리에 적을 버전(빌드 스탬프). 개발 실행이면 빈 문자열이다.
+  buildStamp: () => ipcRenderer.invoke('app:buildStamp'),
   // 서체 설정. 저장은 언제나 main 이 한다(store.js 가 검증하고 state.json 에
   // 쓴다). setFontSettings 는 실제로 저장된 값을 돌려주므로, 렌더러는 자기가
   // 보낸 값이 아니라 돌아온 값을 화면에 입히면 된다.

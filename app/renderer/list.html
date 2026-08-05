@@ -10,6 +10,11 @@
        list / note / setup-email 세 곳의 값은 항상 같이 고쳐야 한다.
        웹폰트는 쓰지 않는다. 이 앱은 오프라인에서도 떠야 한다.
 
+       **리디자인의 서체를 그대로 옮기지 못한 이유가 바로 이것이다.** 원안은
+       Pretendard 와 Gowun Dodum 을 CDN 에서 불러오는데, 위 CSP(default-src
+       'self')가 그 요청을 막고 오프라인 기동 원칙과도 어긋난다. 그래서 형태와
+       색과 배치는 원안을 따르되 글꼴은 사용자가 [설정] 에서 고른 것을 쓴다.
+
        한글은 Segoe UI 에 글리프가 없어 자동으로 Malgun Gothic 으로 떨어진다
        (CSS 폰트 대체는 글자 단위다). 즉 라틴 문자는 Segoe UI, 한글은 맑은
        고딕이 되어 둘 다 제 모습으로 나온다.
@@ -34,9 +39,22 @@
          창의 글자는 이제 전부 --fs-title / --fs-body 를 따른다. */
       --lh-body: 1.65;
       --lh-tight: 1.35;
-      --ink: #1f2328;
-      --ink-dim: #6a7178;
-      --line: #e6e8ea;
+      /* 종이 팔레트. 이 창만의 것이라 note.html 과 견주지 않는다(세 벌이 같아야
+         하는 것은 위 서체 토큰과 아래 Keep 12색뿐이다). 포스트잇은 메모 색
+         자체가 배경이므로 이 종이색을 물려받을 자리가 없다. */
+      --paper: #f2ede3;      /* 창 바탕 */
+      --paper-sunk: #ebe4d6; /* 접히는 패널처럼 한 겹 들어간 면 */
+      --ink: #3a342a;
+      --ink-dim: #8a7f68;    /* 보조 글자 */
+      --ink-faint: #a79c84;  /* 날짜처럼 가장 옅은 글자 */
+      --line: #e4dccb;
+      --line-strong: #c9bc9f;
+      --gold: #c8871c;       /* 링크·강조 */
+      --sticky: #ffd84d;     /* 로고와 [+ 새 메모] */
+      --check-on: #e8833a;   /* 체크된 상자 */
+      --check-edge: #d9ceb6;
+      --pin: #c09a3e;        /* 고정 표식 */
+      --arch: #5e9b7e;       /* 보관 표식 */
 
       /* Keep 팔레트 12색. note.html 과 **같은 값이어야 한다** — 목록 행의
          배경색이 그 메모를 띄웠을 때의 포스트잇 색과 달라 보이면 안 된다.
@@ -55,48 +73,154 @@
       font-size: var(--fs-body);
       line-height: var(--lh-body);
       color: var(--ink);
-      background: #fff;
+      background: var(--paper);
       /* 한국어는 어절 중간에서 줄바꿈되면 글자가 세로로 깨져 보인다. */
       word-break: keep-all;
       overflow-wrap: break-word;
     }
 
-    /* 검색 칸. 거르는 버튼은 없다 — 치는 대로 걸러진다. 오른쪽의 [Keep 열기] 는
-       거르기와 무관하고, 이 앱 밖(브라우저)으로 나가는 유일한 출구다. */
+    /* --- 머리 --------------------------------------------------------------
+       세 줄이다: 이름표 / 거르기(검색·라벨) / 숫자 표.
+       원안의 가짜 창 단추(— ✕)는 옮기지 않았다 — 이 창에는 진짜 OS 제목 표시줄이
+       있어서 그리면 닫기 단추가 두 벌로 보인다. 그 자리는 버전이 대신 쓴다. */
+    header { flex: none; padding: 14px 16px 10px; }
+
+    /* flex-wrap 은 여기서도 필요하다. 360px 창에 본문 24pt 를 걸면 이름과 버전이
+       한 줄에 못 서는데, 접히지 않으면 이름 칸이 0 으로 눌려 "K/e/e/p/메/모" 처럼
+       세로로 깨진다(실제로 317px 짜리 머리가 나왔다). 아래 nowrap 이 그 최후의
+       방어선이고, wrap 은 거기까지 가지 않게 버전을 다음 줄로 내려보낸다. */
+    #brand { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; }
+    /* 노란 쪽지를 비스듬히 붙인 모양. 장식이므로 낭독기에서는 감춘다. */
+    #brand-mark {
+      flex: none; width: 30px; height: 30px; border-radius: 4px;
+      background: var(--sticky); color: #6b5510;
+      transform: rotate(-6deg); box-shadow: 2px 3px 0 rgba(60, 50, 20, .15);
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 800; font-size: var(--fs-title); line-height: 1;
+    }
+    /* flex-basis 가 auto(= 글자 폭)여야 위 wrap 이 실제로 일어난다 — 0 이면
+       줄바꿈 대신 이름 칸이 한없이 줄어든다(#search 의 min-width 와 같은 이치다). */
+    #brand-name {
+      flex: 1 1 auto; min-width: 0; margin: 0;
+      font-size: var(--fs-title); font-weight: 500;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    /* 원안의 날짜 자리. 창 제목의 버전이 길어 잘릴 때도 여기서는 온전히 읽힌다.
+       nowrap 이 없으면 좁을 때 '2026.08.05.14.10' 이 글자 단위로 쪼개진다. */
+    #brand-ver {
+      flex: none; white-space: nowrap;
+      color: var(--ink-faint); font-size: calc(var(--fs-body) * .8);
+      line-height: var(--lh-tight);
+    }
+
     /* flex-wrap 이 필요한 이유는 아래 footer 와 같다: 창은 360px 까지 좁힐 수
        있고 사용자가 [설정]에서 본문 크기를 24pt 까지 올릴 수 있어, 검색칸과
-       버튼이 한 줄에 다 서지 못하는 조합이 실제로 존재한다. 그때 버튼이 아랫줄로
-       내려오는 편이 검색칸이 0px 로 찌그러지는 것보다 낫다. */
-    header {
-      flex: none; display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
-      padding: 10px 10px 8px; border-bottom: 1px solid var(--line);
-    }
-    #search {
+       라벨 고르개가 한 줄에 다 서지 못하는 조합이 실제로 존재한다. */
+    #filters { display: flex; align-items: stretch; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+
+    /* 돋보기를 칸 안에 두려고 감싼다. 아이콘은 SVG 다 — ⌕ 같은 문자는 한글
+       글꼴에 글리프가 없으면 두부(□)로 나온다. */
+    #search-wrap {
       /* min-width 가 0 이 아니라 실제 값인 것이 위 wrap 을 실제로 일으킨다 —
          0 이면 줄바꿈 대신 검색칸이 한없이 줄어든다. */
-      box-sizing: border-box; flex: 1; min-width: 140px;
+      position: relative; flex: 2 1 150px; min-width: 150px; display: flex;
+    }
+    #search-icon {
+      position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
+      color: var(--ink-faint); pointer-events: none; display: flex;
+    }
+    #search {
+      box-sizing: border-box; flex: 1; min-width: 0;
       font-family: inherit; font-size: var(--fs-body); line-height: 1.4;
-      padding: 8px 10px; border: 1px solid #cfd4d8; border-radius: 6px;
+      padding: 10px 14px 10px 36px; border: 0; border-radius: 12px;
       color: var(--ink); background: #fff;
+      box-shadow: inset 0 0 0 1.5px var(--line);
     }
-    #open-keep { flex: none; white-space: nowrap; }
-    /* 라벨 이름은 사용자가 정하므로 얼마든지 길어질 수 있다. 늘어나게 두면
-       검색칸을 밀어내므로 폭을 묶고 넘치는 이름은 브라우저가 잘라 보여준다. */
+    #search::placeholder { color: #b5aa92; }
+    #search:focus { outline: 0; box-shadow: inset 0 0 0 1.5px var(--line-strong); }
+
+    /* 라벨 고르개. 어두운 알약이라 검색칸과 역할이 다름이 한눈에 보인다.
+       ▾ 는 <select> 위에 겹쳐 둔다 — background-image 로 넣으려면 data: URI 가
+       필요한데 CSP 의 default-src 'self' 가 그것을 막는다. */
+    #label-wrap { position: relative; flex: 1 1 110px; min-width: 110px; display: flex; }
     #label-filter {
-      flex: none; max-width: 120px;
-      font-family: inherit; font-size: var(--fs-body); line-height: 1.4;
-      padding: 7px 6px; border: 1px solid #cfd4d8; border-radius: 6px;
-      background: #fff; color: var(--ink);
+      appearance: none; -webkit-appearance: none;
+      box-sizing: border-box; flex: 1; min-width: 0;
+      font-family: inherit; font-size: calc(var(--fs-body) * .95); font-weight: 600;
+      line-height: 1.4; padding: 10px 26px 10px 14px;
+      border: 0; border-radius: 12px; cursor: pointer;
+      background: var(--ink); color: var(--paper);
     }
+    #label-caret {
+      position: absolute; right: 11px; top: 50%; transform: translateY(-50%);
+      color: var(--paper); opacity: .7; pointer-events: none; display: flex;
+    }
+    #label-filter:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
     /* 필터가 걸려 있으면 눈에 보여야 한다 — 목록이 짧은 이유가 필터인지
        메모가 없는 것인지 구별되지 않으면 사용자는 메모가 사라졌다고 읽는다. */
-    #label-filter.on { border-color: #2f6feb; background: #e8f0fe; color: #1b4bb8; font-weight: 600; }
-    #search:focus { outline: 2px solid #2f6feb; outline-offset: -1px; }
+    #label-filter.on { background: var(--gold); color: #fff; }
+    #label-filter.on + #label-caret { color: #fff; opacity: .9; }
 
-    main { flex: 1; overflow-y: auto; padding: 6px 10px 10px; }
-    ul { list-style: none; margin: 0; padding: 0; }
-    li { display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--line); }
-    li:last-child { border-bottom: 0; }
+    /* 숫자 표. 지금 걸러 보이는 수가 아니라 전체 수라(note-stats.js), 검색으로
+       목록이 짧아져도 "내 메모가 몇 장인지"는 그대로 읽힌다. */
+    #stats { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .stat {
+      display: flex; align-items: center; gap: 5px; flex: none;
+      font-size: calc(var(--fs-body) * .85); font-weight: 700; line-height: var(--lh-tight);
+      border-radius: 12px; padding: 4px 11px; white-space: nowrap;
+    }
+    .stat[hidden] { display: none; }
+    #stat-pinned { background: #ffe9a8; color: #7a5e10; }
+    #stat-archived { background: #d9efe4; color: #2e6b4f; }
+    #stat-total { background: #fff; color: var(--ink-dim); box-shadow: inset 0 0 0 1.5px var(--line); }
+    #stat-spacer { flex: 1; }
+    /* 이 앱 밖(브라우저)으로 나가는 유일한 출구. 거르기와 무관하므로 검색칸
+       옆이 아니라 숫자 표 줄의 끝에 둔다. */
+    #open-keep {
+      flex: none; white-space: nowrap; background: none; box-shadow: none;
+      color: var(--gold); font-weight: 700; padding: 4px 0;
+      font-size: calc(var(--fs-body) * .9);
+    }
+    #open-keep:hover { background: none; color: #9d6812; text-decoration: underline; }
+
+    /* --- 목록 --------------------------------------------------------------
+       행은 이제 줄이 아니라 낱장의 쪽지다. 겹칩과 그림자를 위해 overflow-x 를
+       닫아 둔다 — 기울기와 hover 확대가 만드는 몇 px 이 가로 스크롤바를
+       불러오면 목록 전체가 흔들린다. */
+    main { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 4px 16px 14px; }
+    /* 기본 스크롤바는 회색 판이라 종이색 위에서 혼자 튄다. 막대만 남기고
+       바탕은 비운다 — border 가 종이색이라 막대가 가늘어 보이는 것이다. */
+    main::-webkit-scrollbar, #labels::-webkit-scrollbar, #settings::-webkit-scrollbar { width: 10px; }
+    main::-webkit-scrollbar-track, #labels::-webkit-scrollbar-track,
+    #settings::-webkit-scrollbar-track { background: transparent; }
+    main::-webkit-scrollbar-thumb {
+      background: #d8cfba; border-radius: 999px; border: 3px solid var(--paper);
+    }
+    #labels::-webkit-scrollbar-thumb, #settings::-webkit-scrollbar-thumb {
+      background: #d8cfba; border-radius: 999px; border: 3px solid var(--paper-sunk);
+    }
+    main::-webkit-scrollbar-thumb:hover, #labels::-webkit-scrollbar-thumb:hover,
+    #settings::-webkit-scrollbar-thumb:hover { background: var(--line-strong); }
+    ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+    li {
+      position: relative;
+      display: flex; align-items: center; gap: 10px;
+      padding: 11px 14px; border-radius: 12px;
+      background: #fff; border: 1px solid rgba(60, 50, 20, .06);
+      box-shadow: 0 1px 2px rgba(60, 50, 20, .08);
+      transform: rotate(var(--tilt, 0deg));
+      transition: transform 120ms ease, box-shadow 120ms ease;
+    }
+    /* 들린 쪽지가 다음 쪽지에 가리지 않게 한 겹 올린다. */
+    li:hover {
+      z-index: 1; transform: rotate(0deg) scale(1.015);
+      box-shadow: 0 4px 12px rgba(60, 50, 20, .14);
+    }
+    /* 안내 문구 행은 쪽지가 아니다 — 종이도 그림자도 기울기도 없다. */
+    li.no-card {
+      background: none; border: 0; box-shadow: none; transform: none; padding: 0;
+    }
+    li.no-card:hover { transform: none; box-shadow: none; }
 
     /* 메모 색을 행 배경으로 그대로 옮긴다 — note.html 의 body 규칙과 짝이다.
        list.js 가 li.dataset.color 에 심는다. 속성 값이므로 innerHTML 경로가
@@ -120,148 +244,226 @@
        for/id 짝을 쓰지 않으므로 Keep 의 노트 id 를 DOM 속성에 흘리지 않는다. */
     .row {
       flex: 1; min-width: 0;
-      display: flex; align-items: center; gap: 12px;
-      padding: 12px 10px; cursor: pointer;
+      display: flex; align-items: center; gap: 12px; cursor: pointer;
     }
-    .row input { width: 17px; height: 17px; margin: 0; flex: none; cursor: pointer; }
-    /* 목록의 노트 제목은 이 창에서 '제목'이 아니라 본문 항목이다 — 그래서
-       --fs-title 이 아니라 --fs-body 를 따른다(body 에서 물려받는다). */
-    .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    /* 보관 표. 보관된 메모는 목록에서 감추지 않고 맨 위 묶음으로 올라오므로
-       (사이드카가 정렬한다), 그 행이 왜 위에 있는지를 이 표가 말해 준다.
-       행 배경은 메모 색이 차지하고 있어 흐리게 하는 대신 표를 붙인다. */
-    .tag {
-      flex: none; padding: 1px 7px; border-radius: 999px;
-      background: rgba(0, 0, 0, 0.11); color: var(--ink-dim);
-      font-size: var(--fs-body); line-height: var(--lh-tight); white-space: nowrap;
+    /* 기본 체크 상자를 지우고 다시 그린다. appearance 만 벗기고 <input> 자체는
+       그대로 두는 것이 중요하다 — 키보드 초점과 낭독기 역할이 공짜로 따라온다.
+       ✓ 도 글자가 아니라 테두리 두 변을 돌린 것이다(글꼴에 기대지 않는다). */
+    .row input {
+      appearance: none; -webkit-appearance: none;
+      flex: none; width: 19px; height: 19px; margin: 0; position: relative;
+      border: 2px solid var(--check-edge); border-radius: 6px;
+      background: transparent; cursor: pointer;
     }
-    /* 행에 붙는 라벨 이름. 보관/고정 표(.tag)와 달리 테두리만 있는 옅은 칩이라
-       한눈에 다른 종류의 정보임이 보인다. 여러 개일 수 있어 좁으면 줄어든다. */
-    .label-chip {
-      flex: none; max-width: 90px; overflow: hidden; text-overflow: ellipsis;
-      white-space: nowrap; padding: 1px 7px; border-radius: 999px;
-      border: 1px solid #c9ced3; color: var(--ink-dim); font-size: var(--fs-body);
-      line-height: var(--lh-tight);
+    .row input:checked { background: var(--check-on); border-color: var(--check-on); }
+    .row input:checked::after {
+      content: ''; position: absolute; left: 4.5px; top: 1px;
+      width: 4px; height: 9px; border: solid #fff; border-width: 0 2px 2px 0;
+      transform: rotate(42deg);
     }
-    /* 날짜도 같은 본문 크기를 쓰고, 위계는 색(--ink-dim)으로만 준다. */
-    .date { flex: none; padding-right: 10px; color: var(--ink-dim); font-size: var(--fs-body); }
-    .empty { padding: 24px 10px; color: var(--ink-dim); font-size: var(--fs-body); }
+    .row input:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
 
-    /* 서체 설정 패널. 별도 창이 아니라 이 창 안에 접혔다 펴진다 — 뒤의 목록이
-       그대로 보이므로 고른 글꼴/크기가 바로 눈에 들어온다. */
-    #settings {
-      flex: none; border-top: 1px solid var(--line);
-      padding: 12px 20px 14px; background: #fafbfc;
+    .text { flex: 1; min-width: 0; }
+    /* 목록의 노트 제목은 이 창에서 '제목'이 아니라 본문 항목이다 — 그래서
+       --fs-title 이 아니라 --fs-body 를 따른다. */
+    .title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+             line-height: var(--lh-tight); }
+    /* 날짜와 라벨을 제목 아래 한 줄로 모은다. 원안이 오른쪽 날짜 칸을 없애고
+       이 자리로 옮겼다 — 좁은 창에서 제목이 가져갈 폭이 그만큼 넓어진다. */
+    .meta {
+      display: block; margin-top: 1px; color: var(--ink-faint);
+      font-size: calc(var(--fs-body) * .8); line-height: var(--lh-tight);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
-    #settings[hidden] { display: none; }
-    /* 라벨 관리 패널. 서체 설정 패널과 같은 자리, 같은 모양이다 — 둘 다 목록을
-       가리지 않고 아래에서 펴진다. */
-    #labels {
-      flex: none; border-top: 1px solid var(--line);
-      padding: 12px 20px 14px; background: #fafbfc;
-      max-height: 45%; overflow-y: auto;
+    /* 고정·보관 표식. 예전에는 '고정'/'보관' 글자 알약이었는데, 좁은 행에서
+       제목 자리를 잡아먹어 둘 중 하나만 보여줄 수밖에 없었다. 그림쇠는 둘 다
+       나란히 서고도 제목을 밀지 않는다. 뜻은 title/aria-label 로 말한다. */
+    .marks { flex: none; display: flex; align-items: center; gap: 6px; }
+    .mark { display: flex; }
+    .mark-pin { color: var(--pin); }
+    .mark-arch { color: var(--arch); }
+
+    .empty { display: block; padding: 24px 4px; color: var(--ink-dim); font-size: var(--fs-body); }
+
+    /* --- 접히는 패널 -------------------------------------------------------
+       서체 설정과 라벨 관리. 별도 창이 아니라 이 창 안에서 아래로 펴진다 —
+       뒤의 목록이 그대로 보이므로 고른 글꼴/크기가 바로 눈에 들어온다. */
+    /* flex: 0 1 auto + min-height: 0 이 핵심이다. 평소에는 제 높이를 그대로
+       쓰되(0 1 auto 의 basis 는 글 높이다), 창에 자리가 모자라면 **패널이 먼저
+       양보한다**. flex: none 이면 양보하지 않아 아래 footer 를 화면 밖으로
+       밀어낸다. min-height: 0 이 없으면 flex 항목의 기본 min-height(=내용 높이)가
+       그 양보를 막는다. */
+    #settings, #labels {
+      flex: 0 1 auto; min-height: 0; border-top: 1px solid var(--line);
+      padding: 14px 20px 16px; background: var(--paper-sunk);
     }
-    #labels[hidden] { display: none; }
-    #labels-title {
-      margin: 0 0 6px; font-size: var(--fs-title); font-weight: 600;
+    #settings[hidden], #labels[hidden] { display: none; }
+    /* 창 높이의 절반을 넘지 않는다. 이 상한이 없으면 본문을 24pt 로 올린 순간
+       패널이 창보다 커져 아래의 [완료]/[+ 새 메모] 를 화면 밖으로 밀어낸다.
+       (라벨 패널에는 원래 있었고, 서체 패널에는 없어서 실제로 그렇게 밀렸다.) */
+    #settings, #labels { max-height: 45%; overflow-y: auto; }
+    /* 이 창에서 유일하게 '제목'다운 글자다. --fs-title 은 여기와 이름표에만 쓴다. */
+    #settings-title, #labels-title {
+      margin: 0 0 8px; font-size: var(--fs-title); font-weight: 700;
       line-height: var(--lh-tight);
     }
     /* 지우기가 되돌릴 수 없는 일이라는 것을 누르기 전에 알린다. */
-    .hint { margin: 0 0 10px; color: var(--ink-dim); font-size: var(--fs-body);
+    .hint { margin: 0 0 10px; color: var(--ink-dim); font-size: calc(var(--fs-body) * .9);
             line-height: var(--lh-tight); }
-    #label-rows { list-style: none; margin: 0 0 10px; padding: 0; }
-    #label-rows li { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
-    #label-rows input {
-      flex: 1; min-width: 0;
-      font-family: inherit; font-size: var(--fs-body); line-height: 1.4;
-      padding: 5px 8px; border: 1px solid #cfd4d8; border-radius: 6px;
-      background: #fff; color: var(--ink);
+    #label-rows { list-style: none; margin: 0 0 10px; padding: 0; display: block; }
+    #label-rows li {
+      display: flex; align-items: center; gap: 8px; margin-top: 6px;
+      padding: 0; background: none; border: 0; box-shadow: none; transform: none;
     }
-    #label-rows button { flex: none; }
-    /* [삭제]는 되돌릴 수 없다. 평상시에는 다른 단추와 같은 무게로 두고
-       누르려 할 때만 색으로 말한다 — 포스트잇의 [삭제] 와 같은 관례다. */
-    .label-delete:hover { background: rgba(185, 28, 28, 0.14); color: #991b1b; border-color: #e0b4b4; }
-    #new-label {
-      flex: 1; min-width: 0;
-      font-family: inherit; font-size: var(--fs-body); line-height: 1.4;
-      padding: 6px 8px; border: 1px solid #cfd4d8; border-radius: 6px;
-      background: #fff; color: var(--ink);
-    }
-    /* 이 창에서 유일하게 '제목'다운 글자다. --fs-title 은 여기에만 쓴다. */
-    #settings-title {
-      margin: 0 0 10px; font-size: var(--fs-title); font-weight: 600;
-      line-height: var(--lh-tight);
-    }
+    #label-rows li:hover { transform: none; box-shadow: none; }
+
     .field { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
     .field > label { flex: none; width: 68px; color: var(--ink-dim); font-size: var(--fs-body); }
-    .field select, .field input {
+    .field select, .field input, #label-rows input {
       font-family: inherit; font-size: var(--fs-body); line-height: 1.4;
-      padding: 5px 8px; border: 1px solid #cfd4d8; border-radius: 6px;
-      background: #fff; color: var(--ink);
+      padding: 7px 10px; border: 0; border-radius: 10px;
+      background: #fff; color: var(--ink); box-shadow: inset 0 0 0 1.5px var(--line);
     }
     .field select { flex: 1; min-width: 0; }
     .field input[type="number"] { width: 78px; }
+    #label-rows input { flex: 1; min-width: 0; }
+    #label-rows button { flex: none; }
+    .field select:focus, .field input:focus, #label-rows input:focus {
+      outline: 0; box-shadow: inset 0 0 0 1.5px var(--line-strong);
+    }
     .unit { color: var(--ink-dim); font-size: var(--fs-body); }
     .field-actions { display: flex; gap: 8px; margin-top: 12px; }
+    /* [삭제]는 되돌릴 수 없다. 평상시에는 다른 단추와 같은 무게로 두고
+       누르려 할 때만 색으로 말한다 — 포스트잇의 [삭제] 와 같은 관례다. */
+    .label-delete:hover { background: #f7dcd6; color: #99311b; box-shadow: inset 0 0 0 1.5px #e6bdb2; }
 
-    /* flex-wrap 이 필요한 이유: 창은 360px 까지 좁힐 수 있고(main.js 의 minWidth),
+    /* --- 바닥 --------------------------------------------------------------
+       flex-wrap 이 필요한 이유: 창은 360px 까지 좁힐 수 있고(main.js 의 minWidth),
        사용자가 [설정]에서 본문 크기를 24pt 까지 올릴 수 있으므로 한 줄에 다 서지
-       못하는 조합이 실제로 존재한다. 접히지 않으면 줄 오른쪽 끝의 [설정]이 창
-       밖으로 밀려나 닿을 수 없게 된다 — 넘치면 아랫줄로 내려오는 편이 낫다.
-       row-gap 을 따로 두어 두 줄이 되었을 때 서로 붙지 않게 한다. */
+       못하는 조합이 실제로 존재한다. 접히지 않으면 줄 오른쪽 끝의 그림쇠들이 창
+       밖으로 밀려나 닿을 수 없게 된다. */
     footer {
       flex: none;
-      display: flex; align-items: center; flex-wrap: wrap; gap: 10px 12px;
-      padding: 14px 20px; border-top: 1px solid var(--line);
+      display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+      padding: 14px 16px 16px;
     }
     button {
       font-family: inherit; font-size: var(--fs-body); line-height: 1.4;
-      padding: 8px 16px; border: 1px solid #cfd4d8; border-radius: 6px;
-      background: #f7f8f9; color: var(--ink); cursor: pointer;
+      padding: 9px 16px; border: 0; border-radius: 12px;
+      background: #fff; color: var(--ink-dim); cursor: pointer;
+      box-shadow: inset 0 0 0 1.5px var(--line);
     }
-    button:hover { background: #eef0f2; }
+    button:hover { color: var(--ink); box-shadow: inset 0 0 0 1.5px var(--line-strong); }
+    button:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+    /* 눌리는 감각. 원안의 2px 3px 그림자가 눌릴 때 사라지면 실제로 내려앉아 보인다. */
+    #apply, #new { font-weight: 700; box-shadow: 2px 3px 0 rgba(60, 50, 20, .18); }
+    #apply { background: var(--ink); color: var(--paper); }
+    #apply:hover { background: #2b261e; color: #fff; box-shadow: 2px 4px 0 rgba(60, 50, 20, .22); }
+    #new { background: var(--sticky); color: #5c4a0d; font-weight: 800; }
+    #new:hover { background: #ffe071; color: #4a3b09; box-shadow: 2px 4px 0 rgba(60, 50, 20, .22); }
+    #apply:active, #new:active { transform: translate(1px, 2px); box-shadow: 0 1px 0 rgba(60, 50, 20, .18); }
+    /* flex: 1 이 남는 자리를 전부 먹으므로, 뒤에 오는 그림쇠들은 줄 오른쪽 끝에 선다.
+       왼쪽 묶음([완료][+ 새 메모])과 오른쪽 묶음([라벨][설정][동기화])을 벌린다. */
+    #spacer { flex: 1; }
+    /* 그림쇠 단추. 글자가 없으므로 뜻은 title 과 aria-label 이 진다. */
+    .icon-btn {
+      flex: none; width: 40px; height: 40px; padding: 0;
+      display: flex; align-items: center; justify-content: center; color: #7c7159;
+    }
     /* [동기화]가 진행 중인 동안 눌러도 아무 반응이 없어 보이면 두 번째 클릭이
-       쌓인다. disabled 에 눈에 보이는 신호를 줘 "지금 처리 중"임을 알린다. */
+       쌓인다. disabled 에 눈에 보이는 신호를 줘 "지금 처리 중"임을 알린다 —
+       그림쇠만 남은 지금은 옅어지는 것만으로는 약해서 돌기까지 한다. */
     button:disabled { opacity: .55; cursor: default; }
-    button:disabled:hover { background: #f7f8f9; }
+    button:disabled:hover { color: #7c7159; box-shadow: inset 0 0 0 1.5px var(--line); }
+    #sync:disabled svg { animation: spin 1.1s linear infinite; transform-origin: 50% 50%; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) {
+      li, #sync:disabled svg { transition: none; animation: none; }
+    }
+
     /* 토스트. position: fixed 라 레이아웃을 밀지 않고, pointer-events: none 이라
        가운데 떠 있어도 뒤의 목록을 누르는 것을 막지 않는다 — 이 두 줄이 없으면
        "잠깐 보이는 안내"가 "잠깐 못 누르게 하는 것"이 된다. */
     #toast {
       position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
-      max-width: 80%; padding: 10px 16px; border-radius: 8px;
-      background: rgba(31, 35, 40, 0.92); color: #fff;
+      max-width: 80%; padding: 11px 18px; border-radius: 12px;
+      background: rgba(45, 40, 32, .94); color: #f6f1e6;
       font-size: var(--fs-body); line-height: var(--lh-tight); text-align: center;
-      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+      box-shadow: 0 8px 24px rgba(40, 32, 16, .3);
       pointer-events: none; opacity: 0; transition: opacity 140ms ease; z-index: 10;
     }
     #toast.show { opacity: 1; }
-    #apply { border-color: #2f6feb; background: #2f6feb; color: #fff; font-weight: 600; }
-    #apply:hover { background: #2560d0; }
-    /* flex: 1 이 남는 자리를 전부 먹으므로, 뒤에 오는 [설정]은 줄 오른쪽 끝에 선다. */
-    /* 왼쪽 묶음([완료][+ 새 메모])과 오른쪽 묶음([라벨][설정][동기화])을 벌린다.
-       예전에는 상태 문구가 flex: 1 로 이 일을 겸했는데, 그 문구가 토스트로
-       옮겨 가면서 빈자리를 미는 것만 남았다. */
-    #spacer { flex: 1; }
   </style>
 </head>
 <body>
   <header>
-    <input id="search" type="search" placeholder="메모 검색" aria-label="메모 검색"
-           autocomplete="off" autocorrect="off" spellcheck="false">
-    <!-- 브라우저로 keep.google.com 을 연다. 창 안에 Keep 을 띄우지 않는 것이
-         중요하다 — 이 앱의 렌더러는 구글 로그인 화면을 볼 이유가 없고, 봐서도
-         안 된다(자격 증명은 사이드카와 OS 자격증명 저장소에만 산다). 여는 일은
-         언제나 main 이 검증한 뒤 shell.openExternal 로 한다. -->
-    <!-- 라벨(카테고리) 필터. 검색과 나란히 두는 이유는 둘 다 "무엇을 보여줄지"를
-         좁히는 도구이기 때문이다. 항목은 list.js 가 계정의 라벨로 채운다. -->
-    <select id="label-filter" aria-label="라벨로 거르기" title="라벨(카테고리)로 거르기"></select>
-    <button id="open-keep" type="button"
-            title="브라우저에서 Google Keep 열기 (keep.google.com)">Keep 열기</button>
+    <div id="brand">
+      <span id="brand-mark" aria-hidden="true">K</span>
+      <h1 id="brand-name">Keep 메모</h1>
+      <!-- 원안의 날짜 자리를 버전이 쓴다. 창 제목에도 있지만 제목 표시줄은
+           창이 좁으면 잘린다 — 여기서는 언제나 온전히 읽힌다. -->
+      <span id="brand-ver"></span>
+    </div>
+    <div id="filters">
+      <!-- 검색 칸. 거르는 버튼은 없다 — 치는 대로 걸러진다. -->
+      <div id="search-wrap">
+        <span id="search-icon" aria-hidden="true">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.6-3.6"></path></svg>
+        </span>
+        <input id="search" type="search" placeholder="메모 검색" aria-label="메모 검색"
+               autocomplete="off" autocorrect="off" spellcheck="false">
+      </div>
+      <!-- 라벨(카테고리) 필터. 검색과 나란히 두는 이유는 둘 다 "무엇을 보여줄지"를
+           좁히는 도구이기 때문이다. 항목은 list.js 가 계정의 라벨로 채운다. -->
+      <div id="label-wrap">
+        <select id="label-filter" aria-label="라벨로 거르기" title="라벨(카테고리)로 거르기"></select>
+        <span id="label-caret" aria-hidden="true">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg>
+        </span>
+      </div>
+    </div>
+    <div id="stats">
+      <span id="stat-pinned" class="stat" hidden>
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 17v5"></path><path d="M9 3h6l-1 6 3 3v2H7v-2l3-3z"></path></svg>
+        <span class="n"></span>
+      </span>
+      <span id="stat-archived" class="stat" hidden>
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7h18v13H3z"></path><path d="M3 7l2-3h5l1.5 3"></path></svg>
+        <span class="n"></span>
+      </span>
+      <span id="stat-total" class="stat"><span class="n"></span></span>
+      <span id="stat-spacer"></span>
+      <!-- 브라우저로 keep.google.com 을 연다. 창 안에 Keep 을 띄우지 않는 것이
+           중요하다 — 이 앱의 렌더러는 구글 로그인 화면을 볼 이유가 없고, 봐서도
+           안 된다(자격 증명은 사이드카와 OS 자격증명 저장소에만 산다). 여는 일은
+           언제나 main 이 검증한 뒤 shell.openExternal 로 한다. -->
+      <button id="open-keep" type="button"
+              title="브라우저에서 Google Keep 열기 (keep.google.com)">Keep 열기 ↗</button>
+    </div>
   </header>
   <main>
     <ul id="list"></ul>
   </main>
+  <!-- 행에 붙는 고정·보관 표식. 그림을 JS 에서 조립하지 않으려고 여기 두고
+       list.js 는 통째로 복제해 필요 없는 쪽만 떼어낸다 — innerHTML 경로가
+       생기지 않고, 그림을 고칠 때 손댈 곳도 한 군데다.
+       role="img" 이 있어야 aria-label 이 낭독기에 실제로 읽힌다. -->
+  <template id="tpl-marks">
+    <span class="marks">
+      <span class="mark mark-pin" role="img" title="Keep 에서 고정한 메모" aria-label="고정됨">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+             stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"></path><path d="M9 3h6l-1 6 3 3v2H7v-2l3-3z"></path></svg>
+      </span>
+      <span class="mark mark-arch" role="img" title="Keep 에서 보관한 메모" aria-label="보관됨">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+             stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h18v13H3z"></path><path d="M3 7l2-3h5l1.5 3"></path></svg>
+      </span>
+    </span>
+  </template>
   <section id="settings" hidden aria-labelledby="settings-title">
     <h2 id="settings-title">서체 설정</h2>
     <div class="field">
@@ -308,17 +510,26 @@
          통째로 만드는 버튼이었는데, 그러면 그 메모에는 글을 한 줄도 쓸 수 없다.) -->
     <button id="new" type="button">+ 새 메모</button>
     <span id="spacer"></span>
-    <button id="labels-toggle" type="button" aria-expanded="false" aria-controls="labels">라벨</button>
-    <button id="settings-toggle" type="button" aria-expanded="false" aria-controls="settings">설정</button>
+    <!-- 글자를 뗀 그림쇠 단추 셋. 뜻은 title(마우스)과 aria-label(낭독기)이 진다 —
+         둘 다 없으면 그림만 남아 무슨 단추인지 알 길이 없다. -->
+    <button id="labels-toggle" class="icon-btn" type="button" title="라벨 관리"
+            aria-label="라벨 관리" aria-expanded="false" aria-controls="labels">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.6 13.4l-7.2 7.2a2 2 0 0 1-2.8 0l-7.2-7.2a2 2 0 0 1-.6-1.4V4.5A1.5 1.5 0 0 1 4.3 3h7.5a2 2 0 0 1 1.4.6l7.4 7.4a2 2 0 0 1 0 2.4z"></path><circle cx="7.5" cy="7.5" r="1.4"></circle></svg>
+    </button>
+    <button id="settings-toggle" class="icon-btn" type="button" title="서체 설정"
+            aria-label="서체 설정" aria-expanded="false" aria-controls="settings">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.2"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 9 19.3a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.7 15a1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.7 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.7h.08A1.7 1.7 0 0 0 10.1 3.14V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.3 9v.08a1.7 1.7 0 0 0 1.56 1.03H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1.03z"></path></svg>
+    </button>
     <!-- [설정] 바로 오른쪽. Keep 쪽에서 생긴 변경(특히 다른 기기의 삭제)을
          지금 세션에 끌어온다 — list_notes 는 sync() 를 부르지 않으므로
          이 버튼 없이는 앱을 재시작해야만 반영됐다. -->
-    <button id="sync" type="button">동기화</button>
+    <button id="sync" class="icon-btn" type="button" title="Keep 과 동기화" aria-label="Keep 과 동기화">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 11a8.5 8.5 0 0 0-14.7-4.4L3 9.5"></path><path d="M3 4.5v5h5"></path><path d="M3.5 13a8.5 8.5 0 0 0 14.7 4.4L21 14.5"></path><path d="M21 19.5v-5h-5"></path></svg>
+    </button>
   </footer>
-  <!-- line-model.js 는 목록 행의 제목을 뽑을 때 쓴다(제목이 없는 메모는 본문
-       첫 줄을 쓰는데, 그 줄이 체크리스트 항목이면 표식을 떼야 한다). 셋 다
-       list.js 보다 먼저여야 한다 — list.js 는 require() 없이 이 전역들을
-       그대로 쓴다(contextIsolation 렌더러라 require 가 없다). -->
   <!-- 시스템 메시지. 예전에는 푸터에 눌러 담았는데, 창이 좁으면 버튼들 사이에
        끼어 "동/기/화/했/습/니/다" 처럼 세로로 깨졌다(word-break: keep-all 이라
        어절 단위로는 안 쪼개지지만 폭이 한 글자면 별수 없다). 창 가운데에 잠깐
@@ -326,9 +537,15 @@
        role="status" 는 예전 #status 에서 그대로 옮겨 왔다 — 화면 낭독기에는
        여전히 알려야 한다. -->
   <div id="toast" role="status" aria-live="polite"></div>
+  <!-- line-model.js 는 목록 행의 제목을 뽑을 때 쓴다(제목이 없는 메모는 본문
+       첫 줄을 쓰는데, 그 줄이 체크리스트 항목이면 표식을 떼야 한다).
+       note-stats.js 는 머리의 숫자 표와 행의 기울기를 낸다. 넷 다 list.js 보다
+       먼저여야 한다 — list.js 는 require() 없이 이 전역들을 그대로 쓴다
+       (contextIsolation 렌더러라 require 가 없다). -->
   <script src="font-settings.js"></script>
   <script src="note-filter.js"></script>
   <script src="line-model.js"></script>
+  <script src="note-stats.js"></script>
   <script src="list.js"></script>
 </body>
 </html>
