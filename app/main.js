@@ -8,7 +8,7 @@ const { app, BrowserWindow, ipcMain, session, dialog, Tray, Menu, nativeImage, s
 // 부르는 코드는 전부 ready 이후 경로(접기/펼치기/재배치)에만 있다.
 const screen = () => electron.screen
 const { Sidecar } = require('./sidecar')
-const { Store, DEFAULT_NOTE_STATE } = require('./store')
+const { Store, DEFAULT_NOTE_STATE, NOTE_MIN_WIDTH } = require('./store')
 // 저장된 창 자리를 지금의 화면 구성에 맞춘다. 모니터를 뽑았을 때 창이 보이지
 // 않는 곳에 뜨는 것을 막는 유일한 장치다(목록 창과 포스트잇이 같이 쓴다).
 const { fitWindowBounds } = require('./window-bounds')
@@ -623,6 +623,10 @@ function trayAlive () {
   return !!tray && !tray.isDestroyed()
 }
 
+// **접힌 책갈피에는 NOTE_MIN_WIDTH 가 걸리면 안 된다.** 책갈피는 44px 짜리
+// 띠라(BOOKMARK.width) 최소 폭이 살아 있으면 450px 짜리 막대가 된다 — 크기조절
+// 가능한 창으로 재 보면 실제로 450 이 나온다. foldNote 가 접기 직전에 최소값을
+// 내리고 unfoldNote 가 펼치면서 다시 올리는 이유가 이것이다.
 function createNoteWindow (noteId) {
   // 같은 메모의 창을 두 장 만들면 noteWindows 의 항목이 서로를 덮어쓰고,
   // 먼저 닫히는 쪽의 'closed' 가 남은 쪽의 항목을 지워 창을 미아로 만든다.
@@ -639,9 +643,12 @@ function createNoteWindow (noteId) {
   const fitted = fitWindowBounds(
     { x: state.x, y: state.y, width: state.w, height: state.h },
     workAreas(),
-    { width: DEFAULT_NOTE_STATE.w, height: DEFAULT_NOTE_STATE.h })
+    { width: DEFAULT_NOTE_STATE.w, height: DEFAULT_NOTE_STATE.h, minWidth: NOTE_MIN_WIDTH })
   const win = new BrowserWindow({
     ...fitted,
+    // 예전에 좁게 저장해 둔 메모는 여기서 최소 폭까지 벌어진다(위 fitted 가
+    // 이미 올려 놨다). 도구 줄이 잘린 채로 열리는 것보다 낫다.
+    minWidth: NOTE_MIN_WIDTH,
     frame: false,
     transparent: false,
     // 압정의 상태. 이 필드가 생기기 전에는 여기 true 가 박혀 있었고, 그래서
@@ -817,6 +824,18 @@ function foldNote (noteId) {
 
   // 책갈피는 44px 짜리 띠다. 테두리를 잡아 끄는 실수로 찌그러지지 않게 한다.
   win.setResizable(false)
+  // 펼친 포스트잇의 최소 폭(NOTE_MIN_WIDTH)을 풀어 준다.
+  //
+  // 재 보니 Windows 에서는 위 setResizable(false) 만으로도 최소 폭이 무시되어
+  // 책갈피가 제대로 좁아진다. 그래도 이 줄을 두는 이유는 그 면제가 **순서에
+  // 기대는 우연**이기 때문이다. 같은 창을 크기조절 가능한 채로 접으면 44px 을
+  // 요구해도 450px 이 나온다(측정값이다) — 즉 위 한 줄을 옮기거나 지우는
+  // 순간 책갈피가 화면 가장자리를 덮는 막대가 된다. 여기서 최소값을 직접
+  // 내려 두면 그 순서와 무관하게 안전하다.
+  //
+  // 44 를 요구해도 실제로는 48px 이 된다(Windows 의 창 최소 폭). 이 앱이
+  // 최소 폭을 갖기 전부터 그랬으므로 이번 변경으로 달라진 것은 없다.
+  win.setMinimumSize(BOOKMARK.width, 0)
 
   // **책갈피는 압정 설정과 무관하게 언제나 맨 앞이다.**
   //
@@ -849,6 +868,10 @@ function unfoldNote (noteId) {
 
   if (win && !win.isDestroyed()) {
     win.setResizable(true)
+    // 접을 때 풀어 둔 최소 폭을 다시 건다. **아래 setBounds 보다 먼저여야
+    // 한다** — 나중에 걸면 좁게 저장된 메모가 그 폭 그대로 펼쳐졌다가 뒤늦게
+    // 늘어나며 한 번 덜컹인다.
+    win.setMinimumSize(NOTE_MIN_WIDTH, 0)
     // 접는 동안 강제로 걸어 둔 맨 앞을 사용자가 고른 압정 설정으로 되돌린다.
     // state.json 의 값은 접는 동안에도 건드리지 않았으므로 그대로 쓴다 —
     // 압정을 꺼 둔 메모는 펼치면 다시 다른 창 뒤로 갈 수 있다.

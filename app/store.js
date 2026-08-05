@@ -36,9 +36,21 @@ const { normalizeNoteFontOverride } = require('./renderer/note-font')
 // 폭과 높이는 언제나 BOOKMARK 상수에서 온다. x 를 안 담는 이유도 같다: 변(side)만
 // 있으면 그 모니터의 작업 영역에서 다시 계산할 수 있고, 그래야 해상도가 바뀌어도
 // 가장자리에 정확히 붙는다.
+// 포스트잇의 최소 폭. 위쪽 도구 줄에 [체크][고정][보관][라벨][모양][삭제] 와
+// 오른쪽의 압정·접기·닫기가 한 줄로 서야 하는데, 이보다 좁히면 그 단추들이
+// 잘려 나가 손이 닿지 않는다.
+//
+// 기본 폭이 곧 최소 폭인 것이 의도다. **두 값을 따로 두면 반드시 어긋난다** —
+// 기본을 320 으로 두면 새 메모가 320 으로 저장된 채 창은 450 으로 열리고
+// (Electron 이 최소 폭까지 벌린다), 사용자가 창을 한 번 움직이는 순간 파일의
+// 값이 450 으로 조용히 바뀐다. 한 값이면 그런 어긋남이 존재할 수 없다.
+//
+// main.js 가 BrowserWindow 의 minWidth 로 이 값을 그대로 쓴다.
+const NOTE_MIN_WIDTH = 450
+
 const DEFAULT_NOTE_STATE = {
-  x: 120, y: 120, w: 320, h: 380, visible: false, folded: false, conflictBackup: null, font: null,
-  alwaysOnTop: true, bookmark: null
+  x: 120, y: 120, w: NOTE_MIN_WIDTH, h: 380, visible: false, folded: false,
+  conflictBackup: null, font: null, alwaysOnTop: true, bookmark: null
 }
 
 class Store {
@@ -172,4 +184,4 @@ class Store {
   }
 }
 
-module.exports = { Store, DEFAULT_NOTE_STATE }
+module.exports = { Store, DEFAULT_NOTE_STATE, NOTE_MIN_WIDTH }
