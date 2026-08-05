@@ -383,12 +383,29 @@ document.getElementById('apply').addEventListener('click', async () => {
   window.keepSticky.closeList().catch(() => {})
 })
 
+// [+ 새 메모]. 진행 문구가 hold 라 **반드시 결과를 말해야 한다** — 실패했는데
+// 조용히 끝나면 "만드는 중…"이 화면에 그대로 남아 앱이 멈춘 것으로 보인다.
+// notes:create 는 [동기화] 와 같은 { ok, message, code } shape 로 돌아온다.
 document.getElementById('new').addEventListener('click', async () => {
   showToast('새 메모 만드는 중…', { hold: true })
-  const note = await window.keepSticky.createNote('', '')
-  await window.keepSticky.openNote(note.id)
-  await reload()
-  showToast('새 메모를 바탕화면에 띄웠습니다')
+  try {
+    const res = await window.keepSticky.createNote('', '')
+    if (!res.ok) {
+      showToast(res.code === 'AUTH_REQUIRED'
+        ? '재로그인이 필요합니다'
+        : `새 메모를 만들지 못했습니다: ${res.message}`)
+      return
+    }
+    await window.keepSticky.openNote(res.note.id)
+    // 목록도 다시 읽어 새 메모가 행으로 보이게 한다. 이게 실패해도 메모는 이미
+    // 떴으므로 실패로 알리지 않는다 — 다음 [동기화] 나 다시 열기가 맞춘다.
+    await reload().catch(() => {})
+    showToast('새 메모를 바탕화면에 띄웠습니다')
+  } catch (err) {
+    showToast(err && err.message
+      ? `새 메모를 만들지 못했습니다: ${err.message}`
+      : '새 메모를 만들지 못했습니다')
+  }
 })
 
 // --- Keep 열기 ---------------------------------------------------------------
@@ -405,16 +422,6 @@ document.getElementById('open-keep').addEventListener('click', async () => {
   showToast('브라우저를 열지 못했습니다.')
 })
 
-// --- 검색 ------------------------------------------------------------------
-//
-// 버튼은 없다. 치는 대로 걸러진다. 거르는 규칙은 note-filter.js 에 있고 여기서는
-// 언제 다시 그릴지만 정한다.
-//
-// 한글은 IME 조합을 거친다. "회"를 치는 동안 input 이벤트는 ㅎ → 호 → 회 로 세
-// 번 오는데, 그 중간 상태(자모 하나)로 거르면 걸리는 메모가 없어 목록이 비었다
-// 돌아왔다 하며 깜박인다. isComposing 이 켜진 input 은 흘려보내고, 조합이
-// 끝나는 compositionend 에서 한 번 그린다. 그동안 화면에는 직전까지 확정된
-// 글자로 거른 결과가 그대로 남아 있다.
 // --- 라벨 (카테고리) ---------------------------------------------------------
 //
 // 라벨은 노트의 필드가 아니라 계정에 따로 사는 개체다. 그래서 관리(이름 바꾸기,
@@ -569,6 +576,16 @@ newLabelEl.addEventListener('keydown', (e) => {
   addLabel()
 })
 
+// --- 검색 ------------------------------------------------------------------
+//
+// 버튼은 없다. 치는 대로 걸러진다. 거르는 규칙은 note-filter.js 에 있고 여기서는
+// 언제 다시 그릴지만 정한다.
+//
+// 한글은 IME 조합을 거친다. "회"를 치는 동안 input 이벤트는 ㅎ → 호 → 회 로 세
+// 번 오는데, 그 중간 상태(자모 하나)로 거르면 걸리는 메모가 없어 목록이 비었다
+// 돌아왔다 하며 깜박인다. isComposing 이 켜진 input 은 흘려보내고, 조합이
+// 끝나는 compositionend 에서 한 번 그린다. 그동안 화면에는 직전까지 확정된
+// 글자로 거른 결과가 그대로 남아 있다.
 searchEl.addEventListener('input', (e) => {
   if (e.isComposing) return
   render()
@@ -654,13 +671,6 @@ window.keepSticky.onFontSettings((settings) => {
 // 상태를 다시 읽어 맞춘다.
 window.addEventListener('focus', () => { refreshChecks().catch(() => {}) })
 
-// 포스트잇을 휴지통으로 보내면 그 메모는 Keep 에서 사라진다 — 체크만 맞춰서는
-// 안 되고 목록 자체를 다시 받아야 지운 행이 없어진다. main 이 trash 성공 직후에
-// 알려준다. 창이 닫혀 있었다면 이 신호는 오지 않지만, 그때는 다음에 창을 열
-// 때 어차피 reload() 로 시작하므로 지운 메모가 보일 일이 없다.
-//
-// 검색어는 건드리지 않는다(render() 가 지금 입력칸 값을 다시 읽는다). 체크
-// 상태는 reload() 가 실제로 떠 있는 창들로 다시 맞춘다.
 // 포스트잇에서 색을 바꾸면 목록 행의 배경도 같이 바뀌어야 한다. 목록을 다시
 // 읽지 않고 손에 있는 노트의 color 만 갈아 끼운 뒤 다시 그린다 — render() 는
 // 체크 상태를 checkedIds 에서 읽으므로, 아직 [완료] 를 누르지 않은 체크가
@@ -675,6 +685,13 @@ window.keepSticky.onNoteColor((id, color) => {
   render()
 })
 
+// 포스트잇을 휴지통으로 보내면 그 메모는 Keep 에서 사라진다 — 체크만 맞춰서는
+// 안 되고 목록 자체를 다시 받아야 지운 행이 없어진다. main 이 trash 성공 직후에
+// 알려준다. 창이 닫혀 있었다면 이 신호는 오지 않지만, 그때는 다음에 창을 열
+// 때 어차피 reload() 로 시작하므로 지운 메모가 보일 일이 없다.
+//
+// 검색어는 건드리지 않는다(render() 가 지금 입력칸 값을 다시 읽는다). 체크
+// 상태는 reload() 가 실제로 떠 있는 창들로 다시 맞춘다.
 window.keepSticky.onNotesChanged(() => {
   reload().catch(() => {
     // 다시 못 받아왔다면 화면은 직전 목록 그대로 둔다 — 여기서 목록을 비우면

@@ -18,6 +18,8 @@ contextBridge.exposeInMainWorld('keepSticky', {
   // 목록을 { ok, notes } 로 돌려준다(실패하면 { ok:false, message, code }).
   // list_notes 와 달리 다른 기기에서 생긴 변경(특히 삭제)까지 반영한다.
   syncNotes: () => ipcRenderer.invoke('notes:sync'),
+  // 새 메모 만들기. 실패해도 거절하지 않고 { ok:false, message, code } 로 돌려준다
+  // (syncNotes / updateNote 와 같은 관례다) — 성공하면 { ok:true, note } 다.
   createNote: (title, text) => ipcRenderer.invoke('notes:create', title, text),
   updateNote: (id, patch) => ipcRenderer.invoke('notes:update', id, patch),
   // 폰에서 만든 **진짜 Keep List** 노트의 저장. 이 앱은 List 를 새로 만들지

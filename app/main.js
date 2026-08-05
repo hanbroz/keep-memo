@@ -947,18 +947,6 @@ function notifyNotesChanged () {
   wc.send('notes:changed')
 }
 
-/**
- * 포스트잇에서 고른 색을 목록 창의 그 행에도 입힌다. 목록 행의 배경색이 곧 그
- * 메모의 색이므로(list.html), 둘이 동시에 떠 있는데 한쪽만 바뀌면 눈에 띄게
- * 어긋난다.
- *
- * **notes:changed 를 재활용하지 않는 이유**가 이 함수의 존재 이유다. 그 신호는
- * 목록 창을 reload() 시키는데, reload() 는 체크 상태를 실제로 떠 있는 창들로
- * 통째로 다시 맞춘다 — 사용자가 목록에서 체크만 해 두고 아직 [완료] 를 누르지
- * 않았다면 그 체크가 색 한 번 바꿨다고 날아간다. 색만 바뀐 것을 아는 여기서는
- * 색만 보내면 되고, 목록 창은 다시 그리기만 하므로 체크가 그대로 남는다.
- * 사이드카 왕복(list_notes)이 없다는 것도 덤이다.
- */
 // --- 자동 업데이트 ----------------------------------------------------------
 //
 // 포터블 exe 라 electron-updater 를 쓸 수 없다(그것은 NSIS 설치본을 받아 실행
@@ -1144,6 +1132,18 @@ async function openChecked (raw) {
   }
 }
 
+/**
+ * 포스트잇에서 고른 색을 목록 창의 그 행에도 입힌다. 목록 행의 배경색이 곧 그
+ * 메모의 색이므로(list.html), 둘이 동시에 떠 있는데 한쪽만 바뀌면 눈에 띄게
+ * 어긋난다.
+ *
+ * **notes:changed 를 재활용하지 않는 이유**가 이 함수의 존재 이유다. 그 신호는
+ * 목록 창을 reload() 시키는데, reload() 는 체크 상태를 실제로 떠 있는 창들로
+ * 통째로 다시 맞춘다 — 사용자가 목록에서 체크만 해 두고 아직 [완료] 를 누르지
+ * 않았다면 그 체크가 색 한 번 바꿨다고 날아간다. 색만 바뀐 것을 아는 여기서는
+ * 색만 보내면 되고, 목록 창은 다시 그리기만 하므로 체크가 그대로 남는다.
+ * 사이드카 왕복(list_notes)이 없다는 것도 덤이다.
+ */
 function notifyNoteColor (id, color) {
   if (!listWindow || listWindow.isDestroyed()) return
   const wc = listWindow.webContents
@@ -1257,9 +1257,18 @@ app.whenReady().then(async () => {
     return { ok: true, notes }
   })
 
+  // 실패를 던지지 않고 { ok:false } shape 로 돌려준다 — notes:sync / notes:update
+  // 과 같은 관례다. ipcMain.handle 이 던지면 렌더러에는 message 만 건너가고
+  // err.code 는 사라지므로, 목록 창이 AUTH_REQUIRED 를 다른 실패와 구별할 수 없다.
+  // 게다가 [+ 새 메모] 는 결과가 뒤따르는 진행 문구(hold)를 먼저 띄우므로, 여기서
+  // 던지면 그 문구가 영영 남아 사용자에게는 앱이 멈춘 것으로 보인다.
   ipcMain.handle('notes:create', async (_e, title, text) => {
-    const res = await sidecar.call('create_note', { title, text })
-    return res.note
+    try {
+      const res = await sidecar.call('create_note', { title, text })
+      return { ok: true, note: res.note }
+    } catch (err) {
+      return { ok: false, message: err.message, code: err.code }
+    }
   })
 
   // 만들기 핸들러는 위 하나뿐이다. 이 앱이 만드는 메모는 언제나 text 노트다 —
