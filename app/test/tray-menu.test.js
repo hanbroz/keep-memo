@@ -66,7 +66,10 @@ test('종료는 항상 마지막이고 구분선 뒤에 있다', () => {
   assert.strictEqual(items[items.length - 2].type, 'separator')
 })
 
-test('툴팁은 목록 창 제목과 같다', () => {
+test('툴팁은 앱 이름 그대로다', () => {
+  // 목록 창 제목에는 버전이 붙지만(Keep 메모 - ver. …) 트레이 툴팁에는 붙이지
+  // 않는다. 툴팁은 '이게 무슨 앱인가'를 말하는 자리고, 알림 영역에서 버전까지
+  // 읽을 이유가 없다.
   assert.strictEqual(TRAY_TOOLTIP, 'Keep 메모')
 })
 

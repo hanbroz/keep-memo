@@ -349,6 +349,21 @@ async function ensureAuth () {
 }
 
 /**
+ * 목록 창의 제목. 어느 빌드가 도는지 눈에 보이게 버전을 붙인다.
+ *
+ * 화면에 버전이 없으면 "업데이트했는데 그대로다" 같은 상황에서 무엇이 도는지
+ * 확인할 길이 창 제목 말고는 없다 — 작업 관리자의 프로세스 이름은 포터블
+ * 래퍼의 파일 이름일 뿐이라 실제로 실행 중인 빌드와 다를 수 있다.
+ *
+ * 개발 실행에는 빌드 스탬프가 없다. 그때는 그 사실을 드러낸다 — 개발본을
+ * 릴리즈본으로 착각하는 것이 그 반대보다 위험하다.
+ */
+function listWindowTitle () {
+  const stamp = currentBuildStamp()
+  return stamp ? `Keep 메모 - ver. ${stamp}` : 'Keep 메모 - 개발 중'
+}
+
+/**
  * 목록 창을 띄운다. 이미 있으면 새로 만들지 않고 앞으로 가져오기만 한다
  * (createNoteWindow 와 같은 관례다). 트레이에서 몇 번을 눌러도 창은 한 장이다.
  */
@@ -365,10 +380,13 @@ function createListWindow () {
     height: 620,
     minWidth: 360,
     minHeight: 320,
-    title: 'Keep 메모',
+    title: listWindowTitle(),
     webPreferences: { preload: PRELOAD, contextIsolation: true, nodeIntegration: false }
   })
   listWindow = win
+  // list.html 의 <title> 이 창 제목을 덮어써 버전이 지워지는 것을 막는다.
+  // 페이지가 제목을 바꾸려 할 때마다 거절하고 우리 것을 유지한다.
+  win.on('page-title-updated', (e) => { e.preventDefault() })
   win.loadFile(path.join(__dirname, 'renderer', 'list.html'))
   // 창이 실제로 사라진 뒤에 참조를 놓는다. 여기서 지우지 않으면 다음 열기가
   // 죽은 창을 앞으로 가져오려다 아무 일도 안 하게 되고, 목록이 영영 안 뜬다.

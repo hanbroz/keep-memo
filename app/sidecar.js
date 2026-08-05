@@ -46,6 +46,8 @@ class Sidecar {
     this.onRestart = onRestart
     this.stderrTailLines = stderrTailLines
     this.stderrTail = []
+    // 마지막으로 사이드카를 쓸 수 없었던 이유. 오류 문구에 그대로 실린다.
+    this.unusableReason = '아직 시작하지 않았다'
     this.restarts = 0
     this.stopped = false
     this.pending = new Map()
@@ -138,14 +140,29 @@ class Sidecar {
   _writableStdin () {
     const usable = (p) => p && p.stdin && !p.stdin.destroyed && p.stdin.writable
     if (usable(this.proc)) return this.proc.stdin
-    if (this.stopped) return null
-    if (Date.now() - this.lastReviveAt < this.reviveCooldownMs) return null
+
+    // **왜 못 쓰는지를 남긴다.** "사이드카가 실행 중이 아니다" 만으로는 정지된
+    // 것인지, 방금 되살리려다 실패한 것인지, 쿨다운 중인지 알 수 없다 — 실제로
+    // 사용자 화면에 그 문구만 뜬 채로 원인을 좁히지 못한 적이 있다. 화면에
+    // 그대로 나가는 문구이므로 사람이 읽을 수 있는 말로 적는다.
+    if (this.stopped) {
+      this.unusableReason = '정지된 뒤라 다시 띄우지 않는다 (앱을 다시 시작해야 한다)'
+      return null
+    }
+    const waited = Date.now() - this.lastReviveAt
+    if (waited < this.reviveCooldownMs) {
+      this.unusableReason =
+        `방금 다시 띄웠지만 또 죽었다 (${Math.round(waited / 1000)}초 전 시도, 잠시 뒤 다시 시도한다)`
+      return null
+    }
 
     this.lastReviveAt = Date.now()
     this.restarts = 0 // 사람이 다시 부른 것이다. 연쇄 실패 계수는 새로 센다.
     this.start()
     this._notifyRestart()
-    return usable(this.proc) ? this.proc.stdin : null
+    if (usable(this.proc)) return this.proc.stdin
+    this.unusableReason = '다시 띄우지 못했다'
+    return null
   }
 
   _onLine (line) {
@@ -204,7 +221,7 @@ class Sidecar {
         // 스트림이 'error' 를 던져 앱 전체를 날린다. 쓰기 전에 확인하고,
         // 죽어 있으면 _writableStdin 이 되살리기를 한 번 시도한다.
         const stdin = this._writableStdin()
-        if (!stdin) throw new Error('사이드카가 실행 중이 아니다')
+        if (!stdin) throw new Error(`사이드카가 실행 중이 아니다 — ${this.unusableReason}`)
         stdin.write(JSON.stringify({ id, method, params }) + '\n')
       } catch (err) {
         this.pending.delete(id)
