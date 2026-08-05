@@ -172,6 +172,14 @@ function main () {
     '--win',
     `--config.buildVersion=${winVersion}`,
     `--config.extraMetadata.version=${semverVersion}`,
+    // 실행 중인 앱이 **자기 빌드 시각**을 알아야 GitHub 릴리즈의 태그와 견줄 수
+    // 있다. app.getVersion() 은 semver 로 눌러 담은 "yyyy.MMdd.HHmm" 이라
+    // (2026.805.1019) 태그의 "yyyy.MM.dd.HH.mm" 과 모양이 다르다 — 그 둘을
+    // 서로 변환하는 코드를 두면 월/일과 시/분을 압축·복원하는 과정에서 언젠가
+    // 어긋난다. 사람이 보는 그 문자열을 그대로 하나 더 심어 두는 편이 싸다.
+    // 개발 실행(npm start)에는 이 필드가 없고, 그때 update-check 는 아무것도
+    // 하지 않는다.
+    `--config.extraMetadata.buildStamp=${fullStamp}`,
   ]
   console.log(`[build] electron-builder 실행 (buildVersion=${winVersion}, extraMetadata.version=${semverVersion}, artifactName 스탬프=${fullStamp})`)
 

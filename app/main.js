@@ -21,6 +21,7 @@ const { validateNotePatch, validateChecklistPatch } = require('./note-patch')
 // 검사가 아니다. shell.openExternal() 은 문자열을 그대로 운영체제에 넘기고, 그
 // 문자열의 출처는 Keep 이라는 외부 데이터다.
 const { sanitizeUrl, keepListUrl } = require('./renderer/url-open')
+const { decideUpdate } = require('./update-check')
 const { trayMenuTemplate, TRAY_TOOLTIP } = require('./tray-menu')
 const { TRAY_ICON_DATA_URL } = require('./tray-icon')
 const {
@@ -511,6 +512,9 @@ function createTray () {
     // 자격증명이 무효가 되면 목록 창의 [동기화]도 실패한다. 그 창을 닫아 둔
     // 사용자에게는 여기가 유일한 통로다. 실패해도 트레이를 죽이지 않는다.
     onRelogin: () => { runLoginFlow().catch(() => {}) },
+    // 시작할 때의 자동 확인은 조용하다(새 버전이 있을 때만 말한다). 사용자가
+    // 직접 물어보는 통로가 따로 있어야 "지금 최신인지" 확인할 수 있다.
+    onCheckUpdate: () => { checkForUpdate({ silent: false }).catch(() => {}) },
     // 트레이의 [종료]도 반드시 app.quit() 을 거친다. 미저장 편집 flush 와
     // 사이드카 정리는 전부 before-quit / will-quit 에 있고, 그 경로를
     // 건너뛰면 편집이 소리 없이 사라지고 파이썬 자식이 살아남는다.
@@ -821,6 +825,141 @@ function notifyNotesChanged () {
  * 색만 보내면 되고, 목록 창은 다시 그리기만 하므로 체크가 그대로 남는다.
  * 사이드카 왕복(list_notes)이 없다는 것도 덤이다.
  */
+// --- 자동 업데이트 ----------------------------------------------------------
+//
+// 포터블 exe 라 electron-updater 를 쓸 수 없다(그것은 NSIS 설치본을 받아 실행
+// 한다). 대신 이 앱에 이미 있던 조각들을 이어 붙인다: 원본 exe 경로를 아는
+// PORTABLE_EXECUTABLE_FILE, "무엇을 받을지" 정하는 update-check.js, 그리고
+// **다른** exe 를 띄우는 app.relaunch({ execPath }) — 버전 불일치 대화상자가
+// 쓰던 바로 그 경로다. 여기서 새로 하는 일은 릴리즈 조회와 내려받기뿐이다.
+
+const UPDATE_REPO = 'hanbroz/keep-memo'
+const UPDATE_API = `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`
+// 내려받기 제한 시간. 91MB 짜리라 느린 회선도 견뎌야 하지만, 영영 매달려 있으면
+// 사용자는 앱이 멈춘 줄 안다.
+const UPDATE_TIMEOUT_MS = 10 * 60 * 1000
+
+/** 이 빌드의 "yyyy.MM.dd.HH.mm". 개발 실행에는 없다(그때는 확인하지 않는다). */
+function currentBuildStamp () {
+  try {
+    // 패키징본에서는 app.asar 안의 package.json 이고, electron-builder 가
+    // --config.extraMetadata.buildStamp 로 심어 둔 값이 들어 있다.
+    return require('../package.json').buildStamp || null
+  } catch {
+    return null
+  }
+}
+
+/** GitHub 에서 최신 릴리즈 하나를 받아온다. 실패하면 던진다. */
+async function fetchLatestRelease () {
+  const res = await fetch(UPDATE_API, {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      // GitHub 는 User-Agent 없는 요청을 거절한다.
+      'User-Agent': `KeepSticky/${currentBuildStamp() || 'dev'}`
+    },
+    signal: AbortSignal.timeout(30000)
+  })
+  if (!res.ok) throw new Error(`릴리즈 정보를 받지 못했습니다 (HTTP ${res.status})`)
+  return res.json()
+}
+
+/**
+ * 새 exe 를 지금 실행 중인 exe **옆에** 내려받는다.
+ *
+ * 실행 중인 파일을 덮어쓰지 않는 것이 요점이다. 포터블 exe 의 이름에는 이미
+ * 버전이 들어 있으므로(KeepSticky-yyyy.MM.dd.HH.mm.exe) 새 이름으로 나란히
+ * 받으면 되고, 그러면 윈도우의 파일 잠금과 씨름할 일이 없다. 옛 파일은 남는다 —
+ * 지우는 것은 사용자 몫이다. 우리가 지웠다가 되돌릴 방법이 없다.
+ *
+ * .part 로 받아 다 받은 뒤에 이름을 바꾼다. 중간에 끊긴 파일이 실행 가능한
+ * 이름을 갖고 있으면 사용자가 그것을 두 번 클릭한다.
+ */
+async function downloadUpdate (asset, targetDir) {
+  const finalPath = path.join(targetDir, asset.name)
+  const partPath = `${finalPath}.part`
+
+  const res = await fetch(asset.url, {
+    headers: { 'User-Agent': `KeepSticky/${currentBuildStamp() || 'dev'}` },
+    signal: AbortSignal.timeout(UPDATE_TIMEOUT_MS)
+  })
+  if (!res.ok) throw new Error(`내려받지 못했습니다 (HTTP ${res.status})`)
+
+  const buffer = Buffer.from(await res.arrayBuffer())
+  // 크기가 릴리즈가 말한 것과 다르면 받다 만 것이다. 그대로 실행시키면
+  // "열리지 않는 exe" 가 되고 원인을 짐작하기 어렵다.
+  if (asset.size > 0 && buffer.length !== asset.size) {
+    throw new Error(`받은 크기가 다릅니다 (${buffer.length} / ${asset.size} bytes)`)
+  }
+  fs.writeFileSync(partPath, buffer)
+  fs.renameSync(partPath, finalPath)
+  return finalPath
+}
+
+/**
+ * 새 버전이 있는지 보고, 있으면 물어본 뒤 받아서 그것으로 재시작한다.
+ *
+ * @param {{silent: boolean}} opts silent 면 "최신입니다" 같은 결과를 알리지
+ *   않는다. 시작할 때의 자동 확인이 그렇다 — 켤 때마다 대화상자가 뜨면 안 된다.
+ *   트레이에서 사용자가 직접 부른 경우는 반대로 반드시 결과를 말해야 한다.
+ */
+async function checkForUpdate ({ silent }) {
+  const stamp = currentBuildStamp()
+  const exePath = process.env.PORTABLE_EXECUTABLE_FILE || null
+
+  let decision
+  try {
+    decision = decideUpdate(stamp, await fetchLatestRelease())
+  } catch (err) {
+    if (!silent) {
+      dialog.showMessageBox({ type: 'info', message: '업데이트를 확인하지 못했습니다.', detail: err.message })
+    }
+    return
+  }
+
+  if (decision.action === 'none') {
+    if (!silent) dialog.showMessageBox({ type: 'info', message: decision.reason })
+    return
+  }
+  // 받을 것이 있는데 어디에 둘지 모른다(포터블이 아닌 실행). 조용히 삼키지 않고
+  // 직접 받을 수 있게 알려 준다.
+  if (!exePath) {
+    if (!silent) {
+      dialog.showMessageBox({
+        type: 'info',
+        message: `새 버전 ${decision.version} 이 있습니다.`,
+        detail: '이 실행 방식에서는 자동으로 받을 수 없습니다. 릴리즈 페이지에서 직접 받아 주세요.'
+      })
+    }
+    return
+  }
+
+  const ask = await dialog.showMessageBox({
+    type: 'question',
+    buttons: ['지금 받고 다시 시작', '나중에'],
+    defaultId: 0,
+    cancelId: 1,
+    message: `새 버전 ${decision.version} 이 있습니다.`,
+    detail: `지금 버전: ${stamp}\n받을 파일: ${decision.name}\n\n` +
+            '받는 동안 잠시 걸립니다. 다 받으면 지금 창들을 정리하고 새 버전으로 다시 시작합니다.'
+  })
+  if (ask.response !== 0) return
+
+  let downloaded
+  try {
+    downloaded = await downloadUpdate(decision, path.dirname(exePath))
+  } catch (err) {
+    dialog.showMessageBox({ type: 'error', message: '업데이트를 받지 못했습니다.', detail: err.message })
+    return
+  }
+
+  // 여기서부터는 버전 불일치 대화상자가 쓰던 경로 그대로다. relaunch 예약을
+  // app.quit() **보다 먼저** 걸어야 하고, 실제 종료 절차(미저장 편집 flush →
+  // 사이드카 정리)는 app.quit() 이 트리거하는 before-quit 이 맡는다.
+  app.relaunch({ execPath: downloaded })
+  app.quit()
+}
+
 /**
  * 주소를 검증하고 기본 브라우저로 넘긴다. 밖으로 나가는 **모든** 주소가 이
  * 한 곳을 지난다 — 포스트잇 본문의 Ctrl+클릭도, 목록 창의 [Keep 열기] 도.
@@ -1304,6 +1443,11 @@ app.whenReady().then(async () => {
   // 지난 세션에 띄워둔 포스트잇을 위치까지 복원한다.
   for (const id of store.visibleIds()) createNoteWindow(id)
   createListWindow()
+
+  // 시작하고 나서 조용히 한 번 확인한다. 목록 창이 뜬 **뒤**라 앱을 켜는 속도를
+  // 늦추지 않고, 새 버전이 없으면 아무 말도 하지 않는다. 실패(네트워크 없음 등)도
+  // 삼킨다 — 업데이트 확인 때문에 앱을 못 쓰게 되면 안 된다.
+  checkForUpdate({ silent: true }).catch(() => {})
 })
 
 // 정리를 window-all-closed 한 곳에만 두면 안 된다. 이 이벤트는 app.quit() 이나
