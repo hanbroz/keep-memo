@@ -25,23 +25,41 @@ const TRAY_TOOLTIP = 'Keep 메모'
  * [업데이트 확인]도 여기 둔다. 시작할 때의 확인은 새 버전이 있을 때만 말하므로,
  * "지금이 최신인가"를 사용자가 직접 물어볼 통로가 따로 있어야 한다.
  *
+ * [윈도우 시작할 때 실행]은 **끄는 길**로서 여기 있다. 기본값이 켜짐이라
+ * (auto-launch.js) 사용자가 부탁한 적 없이 시작 프로그램에 들어가는 셈인데,
+ * 그것을 되돌릴 방법이 화면 어디에도 없으면 안 된다. 목록 창이 아니라 트레이에
+ * 두는 이유는 [다시 로그인]과 같다 — 목록 창은 닫아 둘 수 있고 트레이는 언제나
+ * 거기 있다. 체크 상태는 부르는 쪽이 state.json 에서 읽어 넘긴다.
+ *
  * @param {{onOpenList: Function, onRelogin: Function, onCheckUpdate: Function,
- *          onQuit: Function}} actions
+ *          onToggleAutoLaunch: Function, onQuit: Function,
+ *          autoLaunchEnabled?: boolean}} actions
  * @returns {Array<object>} Menu.buildFromTemplate 에 그대로 넘길 배열
  */
-function trayMenuTemplate ({ onOpenList, onRelogin, onCheckUpdate, onQuit }) {
+function trayMenuTemplate ({
+  onOpenList, onRelogin, onCheckUpdate, onToggleAutoLaunch, onQuit, autoLaunchEnabled = false
+}) {
   if (typeof onOpenList !== 'function' || typeof onRelogin !== 'function' ||
-      typeof onCheckUpdate !== 'function' || typeof onQuit !== 'function') {
+      typeof onCheckUpdate !== 'function' || typeof onToggleAutoLaunch !== 'function' ||
+      typeof onQuit !== 'function') {
     // 핸들러가 빠진 메뉴는 눌러도 아무 일이 없다. 트레이가 앱에 닿는 유일한
     // 길이므로, 조용히 죽은 메뉴를 만드느니 만들 때 터지는 편이 낫다.
     throw new TypeError(
-      '트레이 메뉴에는 onOpenList, onRelogin, onCheckUpdate, onQuit 이 모두 필요하다')
+      '트레이 메뉴에는 onOpenList, onRelogin, onCheckUpdate, onToggleAutoLaunch, onQuit 이 모두 필요하다')
   }
   return [
     { label: '메모 목록 열기', click: onOpenList },
     { type: 'separator' },
     { label: '다시 로그인', click: onRelogin },
     { label: '업데이트 확인', click: onCheckUpdate },
+    // type: 'checkbox' 는 Electron 이 눌릴 때 checked 를 알아서 뒤집는다. 부르는
+    // 쪽은 그 뜻을 state.json 에 옮기기만 하면 되므로 두 곳이 어긋나지 않는다.
+    {
+      label: '윈도우 시작할 때 실행',
+      type: 'checkbox',
+      checked: !!autoLaunchEnabled,
+      click: onToggleAutoLaunch
+    },
     { type: 'separator' },
     { label: '종료', click: onQuit }
   ]

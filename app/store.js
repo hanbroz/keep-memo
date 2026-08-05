@@ -56,7 +56,7 @@ const DEFAULT_NOTE_STATE = {
 class Store {
   constructor (filePath) {
     this.filePath = filePath
-    this.data = { notes: {}, email: null, fonts: null, list: null }
+    this.data = { notes: {}, email: null, fonts: null, list: null, autoLaunch: true }
   }
 
   load () {
@@ -68,7 +68,10 @@ class Store {
         notes: parsed.notes || {},
         email: parsed.email || null,
         fonts: parsed.fonts || null,
-        list: parsed.list || null
+        list: parsed.list || null,
+        // 없으면 켜진 것으로 읽는다 — 이 필드가 생기기 전의 state.json 이
+        // 업데이트 한 번에 시작 프로그램에서 빠지면 안 된다.
+        autoLaunch: parsed.autoLaunch !== false
       }
     } catch (err) {
       // 파일이 아예 없는 것(ENOENT)은 첫 실행이므로 조용히 넘어간다.
@@ -79,7 +82,7 @@ class Store {
       if (err.code !== 'ENOENT') {
         console.warn(`상태 파일을 읽지 못했다 (${err.code}): ${this.filePath}`)
       }
-      this.data = { notes: {}, email: null, fonts: null, list: null }
+      this.data = { notes: {}, email: null, fonts: null, list: null, autoLaunch: true }
     }
     return this.data
   }
@@ -153,6 +156,25 @@ class Store {
   setListWindow (patch) {
     this.data.list = { ...(this.data.list || {}), ...patch }
     return this.data.list
+  }
+
+  // 윈도우를 켤 때 이 앱도 같이 띄울까.
+  //
+  // **기본값이 true 인 것이 의도다.** 이 앱은 트레이에 상주하는 메모 앱이고,
+  // 바탕화면의 포스트잇은 재부팅해도 거기 있어야 쓸모가 있다 — 시작 프로그램에
+  // 없으면 재부팅 한 번에 전부 사라지고 매번 직접 켜야 한다. alwaysOnTop 과
+  // 같은 방식(!== false)으로 읽으므로 이 필드가 없는 옛 state.json 도 켜진
+  // 것으로 읽힌다.
+  //
+  // 실제로 무엇을 거는지는 auto-launch.js 가 정한다 — 여기 값은 사용자의 뜻일
+  // 뿐이고, 그 뜻을 OS 에 어떻게 옮기는지는 이 파일이 알 바가 아니다.
+  getAutoLaunch () {
+    return this.data.autoLaunch !== false
+  }
+
+  setAutoLaunch (on) {
+    this.data.autoLaunch = !!on
+    return this.data.autoLaunch
   }
 
   // Keep 계정 이메일. state.json 에 저장되는 유일한 개인정보 — 마스터 토큰은

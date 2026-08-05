@@ -5,11 +5,14 @@ const { trayMenuTemplate, TRAY_TOOLTIP } = require('../tray-menu')
 
 const noop = () => {}
 const build = (over = {}) =>
-  trayMenuTemplate({ onOpenList: noop, onRelogin: noop, onCheckUpdate: noop, onQuit: noop, ...over })
+  trayMenuTemplate({
+    onOpenList: noop, onRelogin: noop, onCheckUpdate: noop, onToggleAutoLaunch: noop, onQuit: noop, ...over
+  })
 
 test('메뉴 항목과 순서가 고정돼 있다', () => {
   const labels = build().filter((i) => i.label).map((i) => i.label)
-  assert.deepStrictEqual(labels, ['메모 목록 열기', '다시 로그인', '업데이트 확인', '종료'])
+  assert.deepStrictEqual(labels,
+    ['메모 목록 열기', '다시 로그인', '업데이트 확인', '윈도우 시작할 때 실행', '종료'])
 })
 
 test('각 항목이 넘겨준 핸들러에 연결된다', () => {
@@ -17,9 +20,10 @@ test('각 항목이 넘겨준 핸들러에 연결된다', () => {
   let quit = 0
   let relogin = 0
   let update = 0
+  let autoLaunch = 0
   const items = trayMenuTemplate({
     onOpenList: () => opened++, onRelogin: () => relogin++,
-    onCheckUpdate: () => update++, onQuit: () => quit++
+    onCheckUpdate: () => update++, onToggleAutoLaunch: () => autoLaunch++, onQuit: () => quit++
   })
   const byLabel = (label) => items.find((i) => i.label === label)
 
@@ -34,6 +38,10 @@ test('각 항목이 넘겨준 핸들러에 연결된다', () => {
   byLabel('업데이트 확인').click()
   assert.strictEqual(update, 1)
   assert.strictEqual(quit, 0, '업데이트 확인이 앱을 끝내면 안 된다')
+
+  byLabel('윈도우 시작할 때 실행').click()
+  assert.strictEqual(autoLaunch, 1)
+  assert.strictEqual(quit, 0, '시작 프로그램 토글이 앱을 끝내면 안 된다')
 
   byLabel('종료').click()
   assert.strictEqual(quit, 1)
@@ -57,6 +65,15 @@ test('핸들러가 빠지면 조용히 죽은 메뉴를 만들지 않고 던진�
     TypeError, 'onCheckUpdate 가 빠져도 던져야 한다')
   assert.throws(() => trayMenuTemplate({ onOpenList: noop, onRelogin: noop, onCheckUpdate: noop, onQuit: 'app.quit()' }),
     TypeError)
+})
+
+test('시작 프로그램 항목은 지금 설정을 그대로 비춘다', () => {
+  // 체크가 실제 상태와 반대로 그려지면, 끄려고 누른 사람이 켜게 된다.
+  const item = (over) => build(over).find((i) => i.label === '윈도우 시작할 때 실행')
+  assert.strictEqual(item({ autoLaunchEnabled: true }).checked, true)
+  assert.strictEqual(item({ autoLaunchEnabled: false }).checked, false)
+  assert.strictEqual(item({}).checked, false, '안 넘기면 꺼진 것으로 그린다')
+  assert.strictEqual(item({ autoLaunchEnabled: true }).type, 'checkbox')
 })
 
 test('종료는 항상 마지막이고 구분선 뒤에 있다', () => {

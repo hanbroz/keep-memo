@@ -27,6 +27,10 @@ const { validateNotePatch, validateChecklistPatch } = require('./note-patch')
 // 문자열의 출처는 Keep 이라는 외부 데이터다.
 const { sanitizeUrl, keepListUrl } = require('./renderer/url-open')
 const { decideUpdate } = require('./update-check')
+// 재부팅 뒤에도 이 앱이 트레이에 있어야 메모 앱 노릇을 한다. 무엇을 시작
+// 프로그램으로 걸지(그리고 개발 실행에서는 아예 걸지 않을지)는 저 순수 함수가
+// 정한다 — 포터블 exe 의 경로 함정이 그 파일 주석에 있다.
+const { decideAutoLaunch } = require('./auto-launch')
 const { trayMenuTemplate, TRAY_TOOLTIP } = require('./tray-menu')
 const { TRAY_ICON_DATA_URL } = require('./tray-icon')
 const {
@@ -672,6 +676,15 @@ function createTray () {
     // 시작할 때의 자동 확인은 조용하다(새 버전이 있을 때만 말한다). 사용자가
     // 직접 물어보는 통로가 따로 있어야 "지금 최신인지" 확인할 수 있다.
     onCheckUpdate: () => { checkForUpdate({ silent: false }).catch(() => {}) },
+    // 체크 상자를 누르면 Electron 이 그 항목의 checked 를 이미 뒤집어 두었다.
+    // 여기서는 그 뜻을 state.json 에 옮기고 OS 에 반영하기만 하면 되므로, 화면과
+    // 저장된 값이 어긋날 수가 없다.
+    autoLaunchEnabled: store.getAutoLaunch(),
+    onToggleAutoLaunch: () => {
+      store.setAutoLaunch(!store.getAutoLaunch())
+      store.save()
+      applyAutoLaunch()
+    },
     // 트레이의 [종료]도 반드시 app.quit() 을 거친다. 미저장 편집 flush 와
     // 사이드카 정리는 전부 before-quit / will-quit 에 있고, 그 경로를
     // 건너뛰면 편집이 소리 없이 사라지고 파이썬 자식이 살아남는다.
@@ -699,6 +712,34 @@ function ensureTray () {
     tray = null
   }
   return tray
+}
+
+/**
+ * 시작 프로그램 등록을 지금의 설정과 **지금 실행 중인 exe** 에 맞춘다.
+ *
+ * 뜰 때마다 부른다. 이 앱의 exe 이름에는 빌드 시각이 들어 있고 업데이트는 새
+ * exe 를 옆에 받아 그것으로 재시작하므로, 한 번 걸어 두고 끝내면 재부팅 때마다
+ * 옛 버전이 조용히 뜬다 — 옛 파일이 남아 있어 실패하지도 않는다. 다시 거는 것이
+ * 곧 고치는 것이다(자세한 이유는 auto-launch.js).
+ *
+ * 실패해도 앱을 죽이지 않는다. 시작 프로그램에 못 들어간 앱은 불편할 뿐이지만,
+ * 여기서 던지면 whenReady 가 통째로 무너져 앱이 아예 안 뜬다.
+ */
+function applyAutoLaunch () {
+  const decision = decideAutoLaunch(store.getAutoLaunch(), process.env.PORTABLE_EXECUTABLE_FILE)
+  if (decision.action === 'skip') return decision
+  try {
+    // path 는 Windows 전용 옵션이다(Electron 문서). 안 주면 process.execPath —
+    // 즉 %TEMP% 의 압축 해제본 — 가 걸려 다음 부팅에 조용히 실패한다.
+    app.setLoginItemSettings({
+      openAtLogin: decision.action === 'enable',
+      path: decision.path,
+      args: []
+    })
+  } catch (err) {
+    console.warn(`시작 프로그램 설정을 바꾸지 못했다: ${err.message}`)
+  }
+  return decision
 }
 
 /** 트레이 아이콘이 지금 화면에 있는가. 창 없이 살아 있어도 되는 유일한 근거다. */
@@ -1241,6 +1282,13 @@ app.whenReady().then(async () => {
 
   store = new Store(path.join(app.getPath('userData'), 'state.json'))
   store.load()
+
+  // 시작 프로그램 등록은 여기서, 매 실행마다 맞춘다. 트레이보다 먼저인 이유는
+  // 트레이 메뉴가 이 설정을 체크 상자로 그리기 때문이다(순서가 바뀌면 메뉴가
+  // 옛 값을 그린다). 인증이나 사이드카보다 앞이어도 되는 이유는 이 일이
+  // state.json 하나만 보고 끝나기 때문이다 — 로그인에 실패해 앱이 종료되더라도
+  // 등록은 남아야 맞다. 사용자가 다음 부팅에 다시 시도할 수 있어야 한다.
+  applyAutoLaunch()
 
   // 트레이를 시작의 맨 앞에서 세우는 이유는 편의가 아니라 안전이다. 시작
   // 과정에는 창이 0 장인 순간이 여러 번 있다 — 설정 창을 닫은 뒤 로그인 창이
