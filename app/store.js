@@ -44,7 +44,7 @@ const DEFAULT_NOTE_STATE = {
 class Store {
   constructor (filePath) {
     this.filePath = filePath
-    this.data = { notes: {}, email: null, fonts: null }
+    this.data = { notes: {}, email: null, fonts: null, list: null }
   }
 
   load () {
@@ -52,7 +52,12 @@ class Store {
       const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf8'))
       // fonts 는 null 로 둔다 — "저장한 적 없음"과 "저장했는데 비었음"을 구별할
       // 이유가 없고, getFontSettings() 가 어느 쪽이든 기본값으로 채워 준다.
-      this.data = { notes: parsed.notes || {}, email: parsed.email || null, fonts: parsed.fonts || null }
+      this.data = {
+        notes: parsed.notes || {},
+        email: parsed.email || null,
+        fonts: parsed.fonts || null,
+        list: parsed.list || null
+      }
     } catch (err) {
       // 파일이 아예 없는 것(ENOENT)은 첫 실행이므로 조용히 넘어간다.
       // 그 외(손상된 JSON, 권한 오류, 백신의 파일 잠금 등)는 진짜 환경
@@ -62,7 +67,7 @@ class Store {
       if (err.code !== 'ENOENT') {
         console.warn(`상태 파일을 읽지 못했다 (${err.code}): ${this.filePath}`)
       }
-      this.data = { notes: {}, email: null, fonts: null }
+      this.data = { notes: {}, email: null, fonts: null, list: null }
     }
     return this.data
   }
@@ -119,6 +124,23 @@ class Store {
     const value = normalizeNoteFontOverride(raw)
     this.setNote(id, { font: value })
     return value
+  }
+
+  // 목록 창의 마지막 자리와 크기. 포스트잇은 노트마다 자기 항목에 담지만
+  // (notes[id].x/y/w/h) 목록 창은 한 장뿐이라 최상위에 산다 — fonts / email 과
+  // 같은 자리다.
+  //
+  // 여기 든 값을 그대로 믿고 창을 띄우지는 않는다. 모니터를 뽑으면 이 좌표가
+  // 아무 화면에도 없는 자리를 가리키게 되므로, 부르는 쪽이 window-bounds.js 의
+  // fitWindowBounds 를 거쳐야 한다.
+  getListWindow () {
+    return this.data.list || null
+  }
+
+  /** 넘긴 것만 갈아 끼운다(창을 옮기기만 했으면 크기는 그대로 남는다). */
+  setListWindow (patch) {
+    this.data.list = { ...(this.data.list || {}), ...patch }
+    return this.data.list
   }
 
   // Keep 계정 이메일. state.json 에 저장되는 유일한 개인정보 — 마스터 토큰은

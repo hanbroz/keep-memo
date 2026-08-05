@@ -295,3 +295,87 @@ test('forgetNote 는 없는 노트에도 안전하다', () => {
   assert.strictEqual(s.forgetNote('없는id'), false)
   assert.deepStrictEqual(s.visibleIds(), [])
 })
+
+// --- 목록 창의 자리와 크기 ----------------------------------------------------
+//
+// 포스트잇은 노트마다 자기 항목(notes[id].x/y/w/h)에 담지만 목록 창은 한 장뿐이라
+// 최상위(list)에 산다. 여기서 지키는 것은 **파일을 오갔을 때 살아남는가** 하나다 —
+// load() 에 키를 추가하는 것을 잊으면 저장은 되는데 다시 읽히지 않아, 창은 늘
+// 기본 자리에서 열리고 원인은 눈에 보이지 않는다.
+
+test('목록 창 자리를 저장한 적이 없으면 null 이다', () => {
+  const s = new Store(tmpFile())
+  s.load()
+  assert.strictEqual(s.getListWindow(), null)
+})
+
+test('목록 창 자리는 파일을 오가도 살아남는다', () => {
+  const file = tmpFile()
+  const a = new Store(file)
+  a.load()
+  a.setListWindow({ x: 300, y: 200, width: 800, height: 700, maximized: false })
+  a.save()
+
+  const b = new Store(file)
+  b.load()
+  assert.deepStrictEqual(b.getListWindow(),
+    { x: 300, y: 200, width: 800, height: 700, maximized: false })
+})
+
+test('넘긴 것만 갈아 끼운다 — 옮기기만 했으면 크기는 그대로다', () => {
+  const s = new Store(tmpFile())
+  s.load()
+  s.setListWindow({ x: 10, y: 20, width: 500, height: 600, maximized: false })
+  s.setListWindow({ x: 99, y: 88 })
+  assert.deepStrictEqual(s.getListWindow(),
+    { x: 99, y: 88, width: 500, height: 600, maximized: false })
+})
+
+test('최대화 여부도 남는다 — 크기와 따로 기억해야 한다', () => {
+  // 최대화된 창의 크기를 그대로 적으면 최대화를 풀었을 때 돌아갈 자리를 잃는다.
+  // 그래서 bounds 는 '풀었을 때의 자리'이고 maximized 는 별개의 깃발이다.
+  const file = tmpFile()
+  const a = new Store(file)
+  a.load()
+  a.setListWindow({ x: 40, y: 50, width: 460, height: 620, maximized: true })
+  a.save()
+  const b = new Store(file)
+  b.load()
+  assert.strictEqual(b.getListWindow().maximized, true)
+  assert.strictEqual(b.getListWindow().width, 460, '최대화 전 크기가 남아 있어야 한다')
+})
+
+test('목록 창 자리를 더해도 노트와 서체 설정은 멀쩡하다', () => {
+  const file = tmpFile()
+  const a = new Store(file)
+  a.load()
+  a.setNote('n1', { x: 5, y: 6, visible: true })
+  a.setFontSettings({ family: 'malgun-gothic', titlePt: 12, bodyPt: 11 })
+  a.setEmail('a@b.com')
+  a.setListWindow({ x: 1, y: 2, width: 460, height: 620 })
+  a.save()
+
+  const b = new Store(file)
+  b.load()
+  assert.deepStrictEqual(b.visibleIds(), ['n1'])
+  assert.strictEqual(b.getFontSettings().family, 'malgun-gothic')
+  assert.strictEqual(b.getEmail(), 'a@b.com')
+  assert.strictEqual(b.getListWindow().x, 1)
+})
+
+test('list 키가 없는 옛 state.json 도 그대로 읽힌다', () => {
+  // 이미 쓰던 사용자의 파일에는 이 키가 없다. 여기서 터지면 업데이트 한 번에
+  // 노트 자리와 서체 설정이 통째로 날아간다.
+  const file = tmpFile()
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, JSON.stringify({
+    notes: { n1: { ...DEFAULT_NOTE_STATE, visible: true } }, email: 'old@x.com', fonts: null
+  }), 'utf8')
+
+  const s = new Store(file)
+  s.load()
+  assert.strictEqual(s.getListWindow(), null, '없으면 null 이지 터지지 않는다')
+  assert.deepStrictEqual(s.visibleIds(), ['n1'])
+  assert.strictEqual(s.getEmail(), 'old@x.com')
+  assert.deepStrictEqual(s.getFontSettings(), DEFAULT_FONT_SETTINGS)
+})

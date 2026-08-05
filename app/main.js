@@ -8,7 +8,10 @@ const { app, BrowserWindow, ipcMain, session, dialog, Tray, Menu, nativeImage, s
 // 부르는 코드는 전부 ready 이후 경로(접기/펼치기/재배치)에만 있다.
 const screen = () => electron.screen
 const { Sidecar } = require('./sidecar')
-const { Store } = require('./store')
+const { Store, DEFAULT_NOTE_STATE } = require('./store')
+// 저장된 창 자리를 지금의 화면 구성에 맞춘다. 모니터를 뽑았을 때 창이 보이지
+// 않는 곳에 뜨는 것을 막는 유일한 장치다(목록 창과 포스트잇이 같이 쓴다).
+const { fitWindowBounds } = require('./window-bounds')
 const { createLoginWindow, pollCookie } = require('./login')
 const { resolveSidecarCommand } = require('./sidecar-path')
 const { validateEmail } = require('./email-validate')
@@ -370,6 +373,26 @@ function listWindowTitle () {
  * 목록 창을 띄운다. 이미 있으면 새로 만들지 않고 앞으로 가져오기만 한다
  * (createNoteWindow 와 같은 관례다). 트레이에서 몇 번을 눌러도 창은 한 장이다.
  */
+// 목록 창의 기본 크기와 최소 크기. 저장된 자리가 없을 때의 첫 모습이고,
+// fitWindowBounds 가 저장된 크기를 이 최소값 아래로 내려가지 않게 잡는다.
+const LIST_WINDOW_SIZE = { width: 460, height: 620, minWidth: 360, minHeight: 320 }
+
+/**
+ * 화면들의 작업 영역. **주 모니터를 맨 앞에 둔다.**
+ *
+ * fitWindowBounds 는 저장된 자리가 어느 화면에도 없을 때 첫 번째 것으로 창을
+ * 데려오는데, getAllDisplays() 의 순서는 주 모니터를 앞세워 주지 않는다. 그대로
+ * 넘기면 "구해 온" 창이 하필 보조 모니터에 뜬다 — 모니터를 뽑아서 구해 온
+ * 상황이라 그 보조 화면이야말로 사용자가 안 보고 있는 쪽일 수 있다.
+ *
+ * workArea 인 것도 중요하다. 작업 표시줄을 뺀 영역이라 창이 그 아래로 숨지 않는다.
+ */
+function workAreas () {
+  const primary = screen().getPrimaryDisplay()
+  return [primary, ...screen().getAllDisplays().filter((d) => d.id !== primary.id)]
+    .map((d) => d.workArea)
+}
+
 function createListWindow () {
   if (listWindow && !listWindow.isDestroyed()) {
     if (listWindow.isMinimized()) listWindow.restore()
@@ -378,11 +401,15 @@ function createListWindow () {
     return listWindow
   }
 
+  // 지난번에 두고 간 자리와 크기. 저장된 적이 없으면 fitWindowBounds 가 크기만
+  // 돌려주고, 그때는 BrowserWindow 가 알아서 가운데 띄운다.
+  const saved = store.getListWindow()
+  const fitted = fitWindowBounds(saved, workAreas(), LIST_WINDOW_SIZE)
+
   const win = new BrowserWindow({
-    width: 460,
-    height: 620,
-    minWidth: 360,
-    minHeight: 320,
+    ...fitted,
+    minWidth: LIST_WINDOW_SIZE.minWidth,
+    minHeight: LIST_WINDOW_SIZE.minHeight,
     title: listWindowTitle(),
     // list.html 의 --paper 와 같은 값. 이것이 없으면 첫 그림이 그려지기 전까지
     // 흰 사각형이 번쩍이는데, 종이색 창에서는 그 한 순간이 눈에 띈다.
@@ -390,6 +417,29 @@ function createListWindow () {
     webPreferences: { preload: PRELOAD, contextIsolation: true, nodeIntegration: false }
   })
   listWindow = win
+  // 최대화는 크기가 아니라 상태다. 위 bounds 는 최대화를 풀었을 때 돌아갈
+  // 자리이고(getNormalBounds 로 적는다), 최대화 자체는 여기서 다시 건다.
+  if (saved && saved.maximized) win.maximize()
+
+  /**
+   * 옮기거나 크기를 바꿀 때마다 적는다. 'moved'/'resized' 는 끌기가 **끝났을
+   * 때** 한 번 오므로 끄는 동안 파일을 두드리지 않는다(포스트잇도 같은 관례다).
+   *
+   * getBounds 가 아니라 getNormalBounds 다. 최대화된 창의 getBounds 는 화면
+   * 전체를 돌려주므로, 그것을 적으면 최대화를 풀었을 때 돌아갈 자리를 잃는다.
+   */
+  const persistListBounds = () => {
+    if (win.isDestroyed() || win.isMinimized()) return
+    const b = win.getNormalBounds()
+    store.setListWindow({
+      x: b.x, y: b.y, width: b.width, height: b.height, maximized: win.isMaximized()
+    })
+    store.save()
+  }
+  win.on('moved', persistListBounds)
+  win.on('resized', persistListBounds)
+  win.on('maximize', persistListBounds)
+  win.on('unmaximize', persistListBounds)
   // list.html 의 <title> 이 창 제목을 덮어써 버전이 지워지는 것을 막는다.
   // 페이지가 제목을 바꾸려 할 때마다 거절하고 우리 것을 유지한다.
   win.on('page-title-updated', (e) => { e.preventDefault() })
@@ -583,11 +633,15 @@ function createNoteWindow (noteId) {
   // 펼친 상태의 기하로 만든다. 접힌 채 저장된 메모라도 창은 일단 제자리에
   // 만들고 아래에서 접는다 — 그래야 펼칠 자리가 창에도 스토어에도 남는다.
   const state = store.setNote(noteId, { visible: true })
+  // 저장된 자리가 지금도 화면 위인지 확인한다. 포스트잇은 예전부터 좌표를
+  // 적어 왔지만 그 값을 그대로 믿고 띄웠다 — 보조 모니터에 두고 그것을 뽑으면
+  // 메모가 보이지 않는 곳에 떠서, 목록에서 체크는 되는데 화면에는 없었다.
+  const fitted = fitWindowBounds(
+    { x: state.x, y: state.y, width: state.w, height: state.h },
+    workAreas(),
+    { width: DEFAULT_NOTE_STATE.w, height: DEFAULT_NOTE_STATE.h })
   const win = new BrowserWindow({
-    x: state.x,
-    y: state.y,
-    width: state.w,
-    height: state.h,
+    ...fitted,
     frame: false,
     transparent: false,
     // 압정의 상태. 이 필드가 생기기 전에는 여기 true 가 박혀 있었고, 그래서

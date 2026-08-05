@@ -328,7 +328,11 @@
        밖으로 밀려나 닿을 수 없게 된다. */
     footer {
       flex: none;
-      display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+      /* stretch 다. center 이면 왼쪽 단추는 글자 높이(약 34px)로, 오른쪽
+         그림쇠는 제 높이(40px)로 서서 한 줄 안에서 키가 달라진다. stretch 는
+         그 줄에서 가장 큰 것에 나머지를 맞추므로, 본문 크기를 24pt 로 올려
+         왼쪽이 더 커지는 날에도 저절로 같이 큰다 — 어느 쪽이 크든 상관없다. */
+      display: flex; align-items: stretch; flex-wrap: wrap; gap: 8px;
       padding: 14px 16px 16px;
     }
     button {
@@ -336,7 +340,12 @@
       padding: 9px 16px; border: 0; border-radius: 12px;
       background: #fff; color: var(--ink-dim); cursor: pointer;
       box-shadow: inset 0 0 0 1.5px var(--line);
+      /* 세로 가운데 맞추기. stretch 로 늘어난 뒤에도 글자가 위에 붙지 않는다. */
+      display: inline-flex; align-items: center; justify-content: center;
     }
+    /* 줄이 접혀 왼쪽 단추만 따로 설 때의 바닥. 그때는 맞출 상대가 같은 줄에
+       없으므로 stretch 가 해 줄 일이 없다. */
+    footer button { min-height: 40px; }
     button:hover { color: var(--ink); box-shadow: inset 0 0 0 1.5px var(--line-strong); }
     button:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
     /* 그림자는 없다. 원안에는 2px 3px 짜리 딱딱한 그림자가 있었지만, 오른쪽
@@ -345,7 +354,13 @@
        box-shadow: none 이 필요한 이유는 위 button:hover 가 테두리를 그리기
        때문이다 — 색으로 꽉 찬 이 두 단추에는 그 테두리가 얼룩으로 보인다.
        (id 선택자라 :hover 규칙보다 특정성이 높아 얹었을 때도 유지된다.) */
-    #apply, #new { font-weight: 700; box-shadow: none; }
+    /* 키가 커진 만큼 좌우도 넓힌다. 세로 여백은 이제 stretch 가 정하므로 0 이고,
+       가로만 남겨 알약 비율을 지킨다 — 40px 짜리 단추에 16px 여백이면 글자가
+       가운데 몰려 납작해 보인다. */
+    /* 키가 34px 에서 40px 로 커진 만큼 좌우도 16px → 18px 로 같이 넓힌다.
+       세로 여백은 이제 stretch 가 정하므로 0 이다. 더 넓히면(22px 를 재 봤다)
+       360px 창에서 [동기화] 가 아랫줄로 밀려난다 — 그 폭이 상한이다. */
+    #apply, #new { font-weight: 700; box-shadow: none; padding: 0 18px; }
     #apply { background: var(--ink); color: var(--paper); }
     #apply:hover { background: #2b261e; color: #fff; }
     #new { background: var(--sticky); color: #5c4a0d; font-weight: 800; }
@@ -354,8 +369,10 @@
        왼쪽 묶음([완료][+ 새 메모])과 오른쪽 묶음([라벨][설정][동기화])을 벌린다. */
     #spacer { flex: 1; }
     /* 그림쇠 단추. 글자가 없으므로 뜻은 title 과 aria-label 이 진다. */
+    /* 높이를 박지 않는다. 위 footer button 의 min-height 가 바닥을 잡고, 같은
+       줄에 더 큰 것이 있으면 stretch 가 늘린다 — 박아 두면 그 늘어남을 막는다. */
     .icon-btn {
-      flex: none; width: 40px; height: 40px; padding: 0;
+      flex: none; width: 40px; padding: 0;
       display: flex; align-items: center; justify-content: center; color: #7c7159;
     }
     /* [동기화]가 진행 중인 동안 눌러도 아무 반응이 없어 보이면 두 번째 클릭이
