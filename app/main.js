@@ -270,9 +270,12 @@ function startSidecar () {
 }
 
 // 사이드카 정리는 멱등하다. 종료 경로가 여러 개라 겹쳐 불리는 것이 정상이다.
-function stopSidecar () {
+function stopSidecar (reason = '이유 없음') {
   sidecarStopped = true
-  if (sidecar) sidecar.stop()
+  // 부른 쪽의 이름을 남긴다. 정지된 뒤에 온 요청의 오류 문구에 그대로 실려,
+  // "누가 사이드카를 세웠는가"를 화면만 보고 알 수 있다 — 실제로 그 정보가
+  // 없어서 원인을 못 좁힌 적이 있다.
+  if (sidecar) sidecar.stop(reason)
 }
 
 /**
@@ -1101,7 +1104,7 @@ app.whenReady().then(async () => {
     // 사이드카를 다시 한 번 정리하고 트레이 아이콘도 지운다.
     dialog.showErrorBox('Keep 계정 설정 필요',
       '이메일을 입력하지 않아 앱을 종료합니다.\n다시 실행하면 설정 창이 다시 열립니다.')
-    stopSidecar()
+    stopSidecar('이메일 미설정')
     app.quit()
     return
   }
@@ -1511,7 +1514,7 @@ app.whenReady().then(async () => {
     // 프로세스가 된다. 아이콘만 남고 뒤에 아무것도 없는 트레이는 그보다 더
     // 나쁘다. 실패를 반환한 쪽이 종료까지 책임진다.
     dialog.showErrorBox('Keep 연결 실패', '인증에 실패했습니다. 앱을 종료합니다.')
-    stopSidecar()
+    stopSidecar('인증 실패')
     app.quit()
     return
   }
@@ -1549,7 +1552,7 @@ app.on('window-all-closed', () => {
   // 오직 보이는 아이콘 하나뿐이므로, 그 아이콘이 없으면 근거도 없다 —
   // 아이콘 생성에 실패했거나 이미 정리된 뒤라면 예전처럼 앱을 끝낸다.
   if (trayAlive()) return
-  stopSidecar()
+  stopSidecar('window-all-closed (트레이 없음)')
   app.quit()
 })
 
@@ -1571,7 +1574,7 @@ app.on('before-quit', (e) => {
   // 도달해야 한다. 도달하지 못하면 사용자는 닫히지 않는 앱을 갖게 된다.
   flushAllNotes().catch(() => {}).then(() => {
     try {
-      stopSidecar()
+      stopSidecar('before-quit')
     } finally {
       app.quit()
     }
@@ -1582,7 +1585,7 @@ app.on('before-quit', (e) => {
 // 사이드카 정리가 먼저다 — 트레이 아이콘 하나 때문에 파이썬 자식이 남는 일은
 // 없어야 한다.
 app.on('will-quit', () => {
-  stopSidecar()
+  stopSidecar('will-quit')
   // Windows 는 프로세스가 사라진 뒤에도 알림 영역에 죽은 아이콘을 남겨두는 일이
   // 있다(마우스를 올려야 그제야 사라진다). 종료했는데 아이콘이 남아 있으면
   // 사용자는 앱이 아직 살아 있다고 읽는다. 명시적으로 지운다.
@@ -1592,6 +1595,6 @@ app.on('will-quit', () => {
 
 // Windows 종료/로그오프에서는 before-quit / will-quit 이 오지 않는다.
 // 저장을 기다릴 시간도 없는 경로다. 최소한 유령 프로세스는 남기지 않는다.
-app.on('session-end', stopSidecar)
+app.on('session-end', () => stopSidecar('session-end (윈도우 로그오프/종료)'))
 
 module.exports = { noteWindows }

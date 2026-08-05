@@ -14,6 +14,11 @@ const HEALTHY_UPTIME_MS = 30000
 // 고장 났을 때 요청마다 프로세스를 새로 띄우며 시스템을 두드리지 않게 한다.
 const REVIVE_COOLDOWN_MS = 5000
 
+// 정지된 뒤 이만큼 지나도 앱이 살아 요청을 보내면, 그 종료는 일어나지 않은
+// 것으로 보고 되살린다. 진짜 종료는 이보다 훨씬 빨리 프로세스를 끝낸다 —
+// before-quit 의 미저장 편집 flush 조차 창당 몇 초가 상한이다.
+const STALE_STOP_MS = 20000
+
 /**
  * Python 사이드카와 줄 단위 JSON-RPC 로 대화한다.
  * 이 클래스는 배관만 안다. Keep 도메인(노트, 라벨, 색상)은 모른다.
@@ -26,7 +31,8 @@ class Sidecar {
     onRestart = null,
     stderrTailLines = STDERR_TAIL_LINES,
     healthyUptimeMs = HEALTHY_UPTIME_MS,
-    reviveCooldownMs = REVIVE_COOLDOWN_MS
+    reviveCooldownMs = REVIVE_COOLDOWN_MS,
+    staleStopMs = STALE_STOP_MS
   } = {}) {
     this.command = command
     this.args = args
@@ -38,6 +44,7 @@ class Sidecar {
     // 영영 되살아나지 못했다.
     this.healthyUptimeMs = healthyUptimeMs
     this.reviveCooldownMs = reviveCooldownMs
+    this.staleStopMs = staleStopMs
     this.startedAt = 0
     this.lastReviveAt = 0
     this.onDead = onDead
@@ -50,6 +57,8 @@ class Sidecar {
     this.unusableReason = '아직 시작하지 않았다'
     this.restarts = 0
     this.stopped = false
+    this.stopReason = null
+    this.stoppedAt = 0
     this.pending = new Map()
     this.nextId = 1
     this.proc = null
@@ -57,7 +66,7 @@ class Sidecar {
 
   start () {
     this.startedAt = Date.now()
-    this.proc = spawn(this.command, this.args, {
+    const proc = spawn(this.command, this.args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       // keep_service.py 는 진입점에서 stdin/stdout 을 UTF-8 로 reconfigure
       // 하지만, 그 줄이 실행되기 전(예: import 단계에서 터지는 트레이스백)에는
@@ -66,26 +75,32 @@ class Sidecar {
       // 가장 필요한 순간(초기화 실패 메시지)에 정작 그 메시지가 또 깨진다.
       env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
     })
-    readline.createInterface({ input: this.proc.stdout })
-      .on('line', (line) => this._onLine(line))
+    this.proc = proc
+    readline.createInterface({ input: proc.stdout })
+      .on('line', (line) => { if (this.proc === proc) this._onLine(line) })
     // stderr 는 반드시 비워야 한다. 읽지 않으면 파이프 버퍼(Windows 약 64KB)가
     // 차는 순간 자식이 write 에서 영구히 멈춘다 — 죽지 않으니 재시작도 안 걸리고
     // 모든 호출이 타임아웃만 낸다. 여기 담기는 것은 Python 이 stderr 로 뱉은
     // 것뿐이다. RPC 요청/응답 본문은 절대 담지 않는다 — 그쪽에는 계정 전체
     // 권한을 가진 master token 이 지나간다.
-    readline.createInterface({ input: this.proc.stderr })
-      .on('line', (line) => this._onStderr(line))
+    readline.createInterface({ input: proc.stderr })
+      .on('line', (line) => { if (this.proc === proc) this._onStderr(line) })
     // 죽은 파이프에 쓰면 스트림이 'error' 를 낸다. 리스너가 없으면 그게 그대로
     // Electron 메인 프로세스의 uncaughtException 이 되어 앱 전체가 사라진다 —
     // 열려 있던 포스트잇과 미저장 편집을 전부 데리고. 실제 실패 처리는 'exit'
     // 와 call() 의 가드가 하므로 여기서는 삼키기만 한다.
-    this.proc.stdin.on('error', () => {})
-    this.proc.on('exit', (code) => this._onExit(`사이드카 종료: ${code}`))
-    this.proc.on('error', (err) => this._onExit(err.message))
+    proc.stdin.on('error', () => {})
+    // **어느 프로세스의 죽음인지 따진다.** 죽인 프로세스의 'exit' 는 우리가 이미
+    // 다음 프로세스를 띄운 **뒤에** 도착할 수 있다. 그때 이 핸들러가 그냥 돌면
+    // (가) 방금 보낸 요청을 SIDECAR_DEAD 로 죽이고 (나) 또 한 번 재시작해
+    // 살아 있는 자식을 유령으로 흘린다. 실제로 그렇게 프로세스가 샜다.
+    proc.on('exit', (code) => this._onExit(proc, `사이드카 종료: ${code}`))
+    proc.on('error', (err) => this._onExit(proc, err.message))
     return this
   }
 
-  _onExit (message) {
+  _onExit (proc, message) {
+    if (this.proc !== proc) return // 이미 갈아탄 옛 프로세스의 부고다
     this._rejectAll('SIDECAR_DEAD', message)
     if (this.stopped) return
 
@@ -145,9 +160,24 @@ class Sidecar {
     // 것인지, 방금 되살리려다 실패한 것인지, 쿨다운 중인지 알 수 없다 — 실제로
     // 사용자 화면에 그 문구만 뜬 채로 원인을 좁히지 못한 적이 있다. 화면에
     // 그대로 나가는 문구이므로 사람이 읽을 수 있는 말로 적는다.
-    if (this.stopped) {
-      this.unusableReason = '정지된 뒤라 다시 띄우지 않는다 (앱을 다시 시작해야 한다)'
+    // **정지됐는데 앱이 아직 살아서 요청을 보내고 있다면 그 종료는 일어나지
+    // 않은 것이다.** stopped 의 뜻은 "지금 종료 중"이고, 진짜 종료 중이라면 앱은
+    // 몇 초 안에 사라진다. 그 문턱을 넘도록 살아 있다는 것은 stop() 을 부른
+    // 쪽이 끝내 종료하지 않았다는 뜻이므로, 영구히 고장 난 채로 두지 않는다.
+    //
+    // 이 규칙이 유령 프로세스를 만들지 않는 이유: 진짜 종료 경로는 문턱보다
+    // 한참 먼저 프로세스를 끝내므로 여기까지 오지 못한다. 종료 중에 렌더러가
+    // 보내는 마지막 저장들도 그 안에 들어온다.
+    const stoppedFor = this.stoppedAt ? Date.now() - this.stoppedAt : 0
+    if (this.stopped && stoppedFor < this.staleStopMs) {
+      this.unusableReason = `정지된 뒤라 다시 띄우지 않는다 (${this.stopReason})`
       return null
+    }
+    if (this.stopped) {
+      // 종료가 일어나지 않았다. 정지를 물리고 다시 띄운다.
+      this.stopped = false
+      this.stopReason = null
+      this.stoppedAt = 0
     }
     const waited = Date.now() - this.lastReviveAt
     if (waited < this.reviveCooldownMs) {
@@ -233,11 +263,13 @@ class Sidecar {
     })
   }
 
-  stop () {
+  stop (reason = '이유 없음') {
     // 멱등하다. 종료 경로가 여러 개라 (window-all-closed / before-quit /
     // will-quit / session-end) 겹쳐 불리는 것이 정상이다.
     if (this.stopped) return
     this.stopped = true // 의도적 종료는 재시작하지 않는다
+    this.stopReason = reason
+    this.stoppedAt = Date.now()
     this._rejectAll('SIDECAR_DEAD', '사이드카 정지 요청')
     if (this.proc) {
       this.proc.kill()

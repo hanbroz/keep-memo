@@ -169,3 +169,50 @@ test('재시작 한도를 넘으면 포기하고 onDead 를 호출한다', async
   }
   assert.strictEqual(deadCalled, true)
 })
+
+test('정지됐는데 앱이 계속 살아 있으면 다음 요청이 되살린다', async () => {
+  // **실제로 겪은 고장이다.** 앱은 멀쩡히 떠 있는데 사이드카만 정지된 채로
+  // 남아 모든 요청이 "정지된 뒤라 다시 띄우지 않는다" 로 떨어졌다. stopped 의
+  // 뜻은 "지금 종료 중"이고 진짜 종료 중이면 앱은 몇 초 안에 사라지므로,
+  // 그 문턱을 넘도록 요청이 온다는 것 자체가 그 종료가 일어나지 않았다는 증거다.
+  const s = spawnFake({ timeoutMs: 5000, staleStopMs: 0, reviveCooldownMs: 0 })
+  await s.call('echo', { n: 1 })
+  s.stop('가짜 session-end')
+
+  const res = await s.call('echo', { n: 2 })
+  assert.strictEqual(res.n, 2, '되살아나 응답해야 한다')
+  s.stop()
+})
+
+test('정지 직후에는 되살리지 않는다 — 진짜 종료 중일 수 있다', async () => {
+  // 종료 절차가 도는 동안 되살리면 파이썬 자식이 유령으로 남는다. 문턱 안에서는
+  // 거부하고, 왜 거부했는지(누가 세웠는지)를 문구에 싣는다.
+  const s = spawnFake({ timeoutMs: 5000, staleStopMs: 60000 })
+  await s.call('echo', { n: 1 })
+  s.stop('before-quit')
+
+  await assert.rejects(s.call('echo', { n: 2 }), (err) => {
+    assert.strictEqual(err.code, 'SIDECAR_DEAD')
+    assert.match(err.message, /before-quit/, '누가 세웠는지가 문구에 있어야 한다')
+    return true
+  })
+  s.stop()
+})
+
+test('갈아탄 뒤 도착한 옛 프로세스의 부고는 무시된다', async () => {
+  // 죽인 프로세스의 'exit' 는 다음 프로세스를 띄운 **뒤에** 도착한다. 그때
+  // 핸들러가 그냥 돌면 방금 살린 자식을 또 재시작으로 갈아치워 살아 있는
+  // 프로세스를 유령으로 흘린다. 그렇게 샌 프로세스들 때문에 테스트가 아예
+  // 끝나지 않았다(노드가 종료를 못 한다).
+  const s = spawnFake({ timeoutMs: 5000, staleStopMs: 0, reviveCooldownMs: 0 })
+  await s.call('echo', { n: 1 })
+  s.stop('가짜 session-end')
+  await s.call('echo', { n: 2 }) // 되살아난다
+
+  const revived = s.proc
+  await new Promise((r) => setTimeout(r, 300)) // 옛 부고가 도착할 시간
+  assert.strictEqual(s.proc, revived, '되살린 프로세스가 그대로 남아야 한다')
+  assert.strictEqual(s.restarts, 0, '부고에 반응해 재시작하지 않았다')
+  assert.strictEqual((await s.call('echo', { n: 3 })).n, 3)
+  s.stop()
+})
