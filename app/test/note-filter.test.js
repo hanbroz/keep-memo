@@ -1,7 +1,9 @@
 'use strict'
 const test = require('node:test')
 const assert = require('node:assert')
-const { normalizeSearchQuery, filterNotes, selectionToApply } = require('../renderer/note-filter')
+const {
+  normalizeSearchQuery, filterNotes, selectionToApply, noteInFacets, NOTE_FACETS
+} = require('../renderer/note-filter')
 
 // list_notes 가 주는 모양 그대로다 — id / title / text / updated.
 const NOTES = [
@@ -207,4 +209,53 @@ test('noteHasLabel 은 이름이 아니라 id 로 견준다', () => {
 test('LABEL_FILTER_NONE 은 진짜 라벨 id 와 부딪히지 않는다', () => {
   // Keep 의 라벨 id 는 'tag.' 로 시작한다.
   assert.ok(!LABEL_FILTER_NONE.startsWith('tag.'))
+})
+
+// --- 묶음 거르개 (머리의 [고정]/[보관]/[전체] 표) ------------------------------
+
+const FACETED = [
+  { id: 'p', title: '고정만', pinned: true },
+  { id: 'a', title: '보관만', archived: true },
+  { id: 'pa', title: '둘 다', pinned: true, archived: true },
+  { id: 'n', title: '아무것도 아님' }
+]
+
+test('켜진 묶음이 없으면 [전체] 다 — 전부 통과한다', () => {
+  assert.deepStrictEqual(ids(filterNotes(FACETED, '', '', new Set())), ['p', 'a', 'pa', 'n'])
+  assert.deepStrictEqual(ids(filterNotes(FACETED, '', '', null)), ['p', 'a', 'pa', 'n'])
+})
+
+test('[고정] 을 켜면 고정된 것만 남는다', () => {
+  assert.deepStrictEqual(ids(filterNotes(FACETED, '', '', new Set(['pinned']))), ['p', 'pa'])
+})
+
+test('둘을 같이 켜면 합집합이다 — 교집합이 아니다', () => {
+  // **표의 숫자가 거짓말이 되지 않게 하는 규칙이다.** '고정 2' 를 눌렀는데
+  // 한 줄만 나오면 그 숫자는 화면과 맞지 않는다. 둘 다 켠 것은 "고정된 것과
+  // 보관된 것을 모두 보겠다"는 뜻이지 "둘 다인 것만"이 아니다.
+  const both = new Set(['pinned', 'archived'])
+  assert.deepStrictEqual(ids(filterNotes(FACETED, '', '', both)), ['p', 'a', 'pa'])
+})
+
+test('묶음과 검색은 AND 로 걸린다', () => {
+  const pinned = new Set(['pinned'])
+  assert.deepStrictEqual(ids(filterNotes(FACETED, '둘 다', '', pinned)), ['pa'])
+  // 검색에는 걸리지만 묶음에 안 드는 것은 빠진다.
+  assert.deepStrictEqual(ids(filterNotes(FACETED, '보관만', '', pinned)), [])
+})
+
+test('묶음 이름은 노트의 필드 이름과 같다', () => {
+  // noteInFacets 가 note[facet] 으로 바로 읽으므로 둘이 갈라지면 조용히
+  // 아무것도 안 걸러진다(모든 노트가 undefined 를 갖는 셈이 된다).
+  assert.deepStrictEqual(NOTE_FACETS, ['pinned', 'archived'])
+  for (const facet of NOTE_FACETS) {
+    assert.ok(FACETED.some((n) => facet in n), `${facet} 를 가진 노트가 없다`)
+  }
+})
+
+test('노트가 아닌 것은 켜진 묶음에 들지 않는다', () => {
+  const on = new Set(['pinned'])
+  for (const bad of [null, undefined, 'note', 7]) assert.strictEqual(noteInFacets(bad, on), false)
+  // 켜진 것이 없으면 그것들도 통과한다 — 거르지 않는 것이 [전체] 의 뜻이다.
+  for (const bad of [null, undefined]) assert.strictEqual(noteInFacets(bad, new Set()), true)
 })

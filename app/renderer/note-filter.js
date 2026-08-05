@@ -42,21 +42,45 @@ function noteMatchesQuery (note, normalizedQuery) {
  * 세우면 두 벌이 언젠가 갈라진다.
  *
  * 라벨 필터와 검색은 **AND** 다. 라벨로 좁힌 뒤 그 안에서 다시 검색하는 것이
- * "카테고리 안에서 찾기"라는 자연스러운 뜻이다.
+ * "카테고리 안에서 찾기"라는 자연스러운 뜻이다. 묶음 거르개(고정/보관)도 같은
+ * AND 로 걸린다 — 서로 다른 종류의 좁히기라 겹쳐 쓸 수 있어야 한다.
  *
  * @param {Array} notes 전체 노트
  * @param {string} query 입력칸의 원본 문자열
  * @param {string} [labelFilter] 라벨 id, LABEL_FILTER_NONE, 또는 ''(전체)
+ * @param {Set<string>} [facets] 켜진 묶음. 비어 있으면 [전체] 다.
  */
-function filterNotes (notes, query, labelFilter = '') {
+function filterNotes (notes, query, labelFilter = '', facets = null) {
   if (!Array.isArray(notes)) return []
   const q = normalizeSearchQuery(query)
   const byLabel = typeof labelFilter === 'string' && labelFilter !== ''
-  if (q === '' && !byLabel) return notes.slice()
+  const byFacet = facets instanceof Set && facets.size > 0
+  if (q === '' && !byLabel && !byFacet) return notes.slice()
   return notes.filter((note) => {
+    if (byFacet && !noteInFacets(note, facets)) return false
     if (byLabel && !noteHasLabel(note, labelFilter)) return false
     return noteMatchesQuery(note, q)
   })
+}
+
+// 머리의 표를 눌러 켜는 묶음. 노트의 불리언 필드 이름과 **같아야** 한다 —
+// noteInFacets 가 그 이름으로 바로 읽는다.
+const NOTE_FACETS = ['pinned', 'archived']
+
+/**
+ * 이 노트가 켜진 묶음에 드는가.
+ *
+ * 켜진 것들끼리는 **OR** 다. [고정]과 [보관]을 둘 다 켜면 고정된 것과 보관된
+ * 것을 모두 본다는 뜻이지, 둘 다인 메모만 본다는 뜻이 아니다. 그래야 표에 적힌
+ * 숫자와 실제로 보이는 줄 수가 맞는다 — '고정 3' 을 눌렀는데 한 줄만 나오면
+ * 그 숫자는 거짓말이 된다.
+ *
+ * 켜진 것이 하나도 없으면 전부 통과한다. 그것이 [전체] 다.
+ */
+function noteInFacets (note, facets) {
+  if (!(facets instanceof Set) || facets.size === 0) return true
+  if (!note || typeof note !== 'object') return false
+  return NOTE_FACETS.some((facet) => facets.has(facet) && !!note[facet])
 }
 
 // '라벨 없음'을 고른 상태. <select> 의 value 로 오가야 하므로 문자열이어야 하고,
@@ -116,6 +140,6 @@ function selectionToApply (allNotes, checkedIds) {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     normalizeSearchQuery, noteMatchesQuery, filterNotes, selectionToApply,
-    noteHasLabel, LABEL_FILTER_NONE
+    noteHasLabel, LABEL_FILTER_NONE, NOTE_FACETS, noteInFacets
   }
 }

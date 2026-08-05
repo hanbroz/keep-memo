@@ -29,14 +29,17 @@ const listEl = document.getElementById('list')
 const toastEl = document.getElementById('toast')
 const searchEl = document.getElementById('search')
 const syncEl = document.getElementById('sync')
-const brandVerEl = document.getElementById('brand-ver')
 const markTplEl = document.getElementById('tpl-marks')
-// 머리의 숫자 표. 세는 일은 note-stats.js 가 한다.
+// 머리의 숫자 표. 세는 일은 note-stats.js 가, 거르는 일은 note-filter.js 가 한다.
 const statEls = {
   pinned: document.getElementById('stat-pinned'),
   archived: document.getElementById('stat-archived'),
   total: document.getElementById('stat-total')
 }
+// 켜진 묶음 거르개. 비어 있으면 [전체] 다 — 없는 상태를 따로 두지 않는 것이
+// 중요하다. '전체'를 네 번째 값으로 두면 "전체이면서 고정" 같은 있을 수 없는
+// 조합을 코드가 표현할 수 있게 되고, 그 조합을 막는 일이 영영 따라다닌다.
+const activeFacets = new Set()
 const labelFilterEl = document.getElementById('label-filter')
 const labelsPanelEl = document.getElementById('labels')
 const labelsToggleEl = document.getElementById('labels-toggle')
@@ -132,36 +135,61 @@ function marksFor (note) {
 }
 
 /**
- * 머리의 숫자 표를 다시 쓴다. 세는 것은 **걸러 보이는 것이 아니라 전체**다 —
- * 검색으로 목록이 짧아졌을 때 "내 메모가 몇 장인지"를 알려주는 것이 이 표의
- * 쓸모이기 때문이다.
+ * 머리의 숫자 표를 다시 쓰고, 눌린 상태를 지금의 거르개와 맞춘다.
+ *
+ * 세는 것은 **걸러 보이는 것이 아니라 전체**다 — 검색으로 목록이 짧아졌을 때
+ * "내 메모가 몇 장인지"를 알려주는 것이 이 표의 쓸모이기 때문이다. 그래서
+ * '고정 3' 을 눌렀을 때 나오는 줄 수도 언제나 3 이다.
  *
  * 0 인 표는 감춘다. '고정 0' 은 알려주는 것이 없으면서 자리만 차지한다.
+ * **감추면서 그 거르개도 같이 끈다.** 켜 둔 채로 감추면 목록이 통째로 비는데
+ * 그것을 풀 단추가 화면에 없어, 사용자가 빠져나올 수 없는 상태가 된다.
  */
 function renderStats () {
   const stats = countNoteStats(allNotes)
-  const write = (el, n, text) => {
+  const write = (el, facet, n, text) => {
     el.hidden = n === 0
+    if (el.hidden) activeFacets.delete(facet)
+    el.setAttribute('aria-pressed', String(activeFacets.has(facet)))
     el.querySelector('.n').textContent = text
   }
-  write(statEls.pinned, stats.pinned, `고정 ${stats.pinned}`)
-  write(statEls.archived, stats.archived, `보관 ${stats.archived}`)
+  write(statEls.pinned, 'pinned', stats.pinned, `고정 ${stats.pinned}`)
+  write(statEls.archived, 'archived', stats.archived, `보관 ${stats.archived}`)
   // 전체는 0 이어도 보여준다. 메모가 없다는 것 자체가 알려줄 만한 사실이다.
+  // 켜짐은 "아무 묶음도 안 걸렸다" 이지 제 것을 따로 갖는 상태가 아니다.
+  statEls.total.setAttribute('aria-pressed', String(activeFacets.size === 0))
   statEls.total.querySelector('.n').textContent = `전체 ${stats.total}`
 }
 
+/**
+ * 묶음 표를 눌렀다. facet 이 null 이면 [전체] 다 — 켜는 것이 아니라 **둘 다
+ * 끄는** 것이라서, 이미 아무것도 안 걸려 있으면 아무 일도 일어나지 않는다.
+ */
+function toggleFacet (facet) {
+  if (facet === null) activeFacets.clear()
+  else if (activeFacets.has(facet)) activeFacets.delete(facet)
+  else activeFacets.add(facet)
+  render()
+}
+
+statEls.pinned.addEventListener('click', () => { toggleFacet('pinned') })
+statEls.archived.addEventListener('click', () => { toggleFacet('archived') })
+statEls.total.addEventListener('click', () => { toggleFacet(null) })
+
 /** 지금의 검색어에 맞는 행만 다시 그린다. 체크 상태는 checkedIds 에서 온다. */
 function render () {
+  // 거르기보다 **먼저** 부른다. 0 이 된 묶음의 거르개를 여기서 끄기 때문에,
+  // 순서가 뒤집히면 방금 사라진 묶음으로 한 번 더 걸러 목록이 비어 보인다.
+  renderStats()
   const query = searchEl.value
-  const shown = filterNotes(allNotes, query, labelFilterEl.value)
+  const shown = filterNotes(allNotes, query, labelFilterEl.value, activeFacets)
   renderedRows.length = 0
   listEl.textContent = ''
-  renderStats()
 
   if (shown.length === 0) {
     showEmpty(allNotes.length === 0
       ? 'Keep 에 메모가 없습니다. [+ 새 메모] 로 하나 만들어 보세요.'
-      : '검색과 맞는 메모가 없습니다.')
+      : '조건과 맞는 메모가 없습니다.')
     return
   }
 
@@ -654,12 +682,6 @@ window.keepSticky.onNotesChanged(() => {
     showToast('목록을 새로 고치지 못했습니다.')
   })
 })
-
-// 이름표 옆의 버전. 실패해도 창은 그대로 쓸 수 있어야 하므로 기다리지 않고,
-// 못 받아오면 자리를 비워 둔다 — 없는 버전을 지어내는 것보다 낫다.
-window.keepSticky.buildStamp().then((stamp) => {
-  brandVerEl.textContent = stamp ? `ver. ${stamp}` : '개발 중'
-}).catch(() => {})
 
 // 저장된 설정을 IPC 로 읽어오기 전에 기본값을 먼저 입힌다. list.html 의 :root
 // 는 note.html / setup-email.html 과 같은 값을 유지해야 하므로(세 벌 동기),

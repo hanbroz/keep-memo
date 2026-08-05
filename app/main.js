@@ -1244,11 +1244,6 @@ app.whenReady().then(async () => {
     return { ok: true }
   })
 
-  // 목록 창 머리에 적을 버전. 창 제목에도 있지만(listWindowTitle) 제목 표시줄은
-  // 창이 좁으면 잘린다 — 창 안에서는 언제나 온전히 읽혀야 한다. 개발 실행에는
-  // 스탬프가 없고, 그 사실을 감추지 않는 것도 창 제목과 같은 규칙이다.
-  ipcMain.handle('app:buildStamp', () => currentBuildStamp() || '')
-
   // 서체 설정. 검증과 기본값은 전부 store(=font-settings.js)가 한다.
   ipcMain.handle('settings:getFonts', () => store.getFontSettings())
   ipcMain.handle('settings:setFonts', (_e, raw) => {
