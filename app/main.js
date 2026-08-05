@@ -872,6 +872,20 @@ const UPDATE_API = `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`
 // 사용자는 앱이 멈춘 줄 안다.
 const UPDATE_TIMEOUT_MS = 10 * 60 * 1000
 
+// 켜 둔 동안에도 다시 확인하는 주기.
+//
+// **시작할 때 한 번으로는 모자란다.** 이 앱은 트레이에 사는 상주 앱이라 며칠씩
+// 켜져 있고, 사용자가 굳이 재시작할 이유가 없다. 그동안 올라온 릴리즈는 시작
+// 확인만으로는 영영 보이지 않는다.
+//
+// 4시간인 이유: 릴리즈는 드물게 올라오고, GitHub 의 비인증 API 한도는 시간당
+// 60회라 여유가 크다. 더 자주 볼 이유가 없다.
+const UPDATE_INTERVAL_MS = 4 * 60 * 60 * 1000
+
+// 사용자가 [취소] 를 누른 버전. 주기 확인이 같은 것을 몇 시간마다 다시 묻지
+// 않게 한다. 앱을 다시 켜면 잊는다 — 그때는 한 번 더 물어볼 만하다.
+let declinedUpdateVersion = null
+
 /** 이 빌드의 "yyyy.MM.dd.HH.mm". 개발 실행에는 없다(그때는 확인하지 않는다). */
 function currentBuildStamp () {
   try {
@@ -967,16 +981,25 @@ async function checkForUpdate ({ silent }) {
     return
   }
 
+  // 자동 확인에서 이미 거절한 버전은 다시 묻지 않는다. 주기적으로 확인하므로
+  // 이 기억이 없으면 [취소] 를 누른 사용자에게 같은 것을 몇 시간마다 다시 묻게
+  // 된다 — 그건 알림이 아니라 잔소리다. 트레이에서 직접 물어보는 경우(silent
+  // 아님)는 사용자가 방금 요청한 것이므로 이 기억을 무시한다.
+  if (silent && decision.version === declinedUpdateVersion) return
+
   const ask = await dialog.showMessageBox({
     type: 'question',
-    buttons: ['지금 받고 다시 시작', '나중에'],
+    buttons: ['확인', '취소'],
     defaultId: 0,
     cancelId: 1,
-    message: `새 버전 ${decision.version} 이 있습니다.`,
+    message: `새로운 업데이트 ver. ${decision.version} 가 있습니다. 업데이트 하시겠습니까?`,
     detail: `지금 버전: ${stamp}\n받을 파일: ${decision.name}\n\n` +
             '받는 동안 잠시 걸립니다. 다 받으면 지금 창들을 정리하고 새 버전으로 다시 시작합니다.'
   })
-  if (ask.response !== 0) return
+  if (ask.response !== 0) {
+    declinedUpdateVersion = decision.version
+    return
+  }
 
   let downloaded
   try {
@@ -1486,6 +1509,11 @@ app.whenReady().then(async () => {
   // 늦추지 않고, 새 버전이 없으면 아무 말도 하지 않는다. 실패(네트워크 없음 등)도
   // 삼킨다 — 업데이트 확인 때문에 앱을 못 쓰게 되면 안 된다.
   checkForUpdate({ silent: true }).catch(() => {})
+
+  // 그 뒤로는 주기적으로 다시 본다. 켜 둔 동안 올라온 릴리즈도 잡아야 한다.
+  // unref() 로 이 타이머가 앱의 수명을 붙잡지 않게 한다 — 종료를 늦추면 안 된다.
+  setInterval(() => { checkForUpdate({ silent: true }).catch(() => {}) },
+    UPDATE_INTERVAL_MS).unref()
 })
 
 // 정리를 window-all-closed 한 곳에만 두면 안 된다. 이 이벤트는 app.quit() 이나
