@@ -1070,7 +1070,10 @@ async function checkForUpdate ({ silent }) {
     buttons: ['확인', '취소'],
     defaultId: 0,
     cancelId: 1,
-    message: `새로운 업데이트 ver. ${decision.version} 가 있습니다. 업데이트 하시겠습니까?`,
+    // 묻는 말은 줄을 바꿔 따로 세운다. 한 줄로 두면 창 폭에 따라 "업데이트 하 /
+    // 시겠습니까?" 처럼 어절 한가운데서 접힌다 — 대화상자의 message 는 우리가
+    // CSS 를 걸 수 있는 곳이 아니라(OS 가 그린다) 줄바꿈을 직접 넣는 수밖에 없다.
+    message: `새로운 업데이트 ver. ${decision.version} 가 있습니다.\n업데이트 하시겠습니까?`,
     detail: `지금 버전: ${stamp}\n받을 파일: ${decision.name}\n\n` +
             '받는 동안 잠시 걸립니다. 다 받으면 지금 창들을 정리하고 새 버전으로 다시 시작합니다.'
   })
