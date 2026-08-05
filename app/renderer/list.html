@@ -224,10 +224,25 @@
        쌓인다. disabled 에 눈에 보이는 신호를 줘 "지금 처리 중"임을 알린다. */
     button:disabled { opacity: .55; cursor: default; }
     button:disabled:hover { background: #f7f8f9; }
+    /* 토스트. position: fixed 라 레이아웃을 밀지 않고, pointer-events: none 이라
+       가운데 떠 있어도 뒤의 목록을 누르는 것을 막지 않는다 — 이 두 줄이 없으면
+       "잠깐 보이는 안내"가 "잠깐 못 누르게 하는 것"이 된다. */
+    #toast {
+      position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      max-width: 80%; padding: 10px 16px; border-radius: 8px;
+      background: rgba(31, 35, 40, 0.92); color: #fff;
+      font-size: var(--fs-body); line-height: var(--lh-tight); text-align: center;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+      pointer-events: none; opacity: 0; transition: opacity 140ms ease; z-index: 10;
+    }
+    #toast.show { opacity: 1; }
     #apply { border-color: #2f6feb; background: #2f6feb; color: #fff; font-weight: 600; }
     #apply:hover { background: #2560d0; }
     /* flex: 1 이 남는 자리를 전부 먹으므로, 뒤에 오는 [설정]은 줄 오른쪽 끝에 선다. */
-    #status { flex: 1; min-width: 0; font-size: var(--fs-body); color: var(--ink-dim); }
+    /* 왼쪽 묶음([완료][+ 새 메모])과 오른쪽 묶음([라벨][설정][동기화])을 벌린다.
+       예전에는 상태 문구가 flex: 1 로 이 일을 겸했는데, 그 문구가 토스트로
+       옮겨 가면서 빈자리를 미는 것만 남았다. */
+    #spacer { flex: 1; }
   </style>
 </head>
 <body>
@@ -292,7 +307,7 @@
          (예전에는 여기 [+ 체크리스트] 가 하나 더 있었다. Keep 의 List 노트를
          통째로 만드는 버튼이었는데, 그러면 그 메모에는 글을 한 줄도 쓸 수 없다.) -->
     <button id="new" type="button">+ 새 메모</button>
-    <span id="status" role="status"></span>
+    <span id="spacer"></span>
     <button id="labels-toggle" type="button" aria-expanded="false" aria-controls="labels">라벨</button>
     <button id="settings-toggle" type="button" aria-expanded="false" aria-controls="settings">설정</button>
     <!-- [설정] 바로 오른쪽. Keep 쪽에서 생긴 변경(특히 다른 기기의 삭제)을
@@ -304,6 +319,13 @@
        첫 줄을 쓰는데, 그 줄이 체크리스트 항목이면 표식을 떼야 한다). 셋 다
        list.js 보다 먼저여야 한다 — list.js 는 require() 없이 이 전역들을
        그대로 쓴다(contextIsolation 렌더러라 require 가 없다). -->
+  <!-- 시스템 메시지. 예전에는 푸터에 눌러 담았는데, 창이 좁으면 버튼들 사이에
+       끼어 "동/기/화/했/습/니/다" 처럼 세로로 깨졌다(word-break: keep-all 이라
+       어절 단위로는 안 쪼개지지만 폭이 한 글자면 별수 없다). 창 가운데에 잠깐
+       띄웠다 사라지는 편이 좁은 창에서도 읽힌다.
+       role="status" 는 예전 #status 에서 그대로 옮겨 왔다 — 화면 낭독기에는
+       여전히 알려야 한다. -->
+  <div id="toast" role="status" aria-live="polite"></div>
   <script src="font-settings.js"></script>
   <script src="note-filter.js"></script>
   <script src="line-model.js"></script>

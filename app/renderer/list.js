@@ -26,7 +26,7 @@ const checkedIds = new Set()
 const renderedRows = []
 
 const listEl = document.getElementById('list')
-const statusEl = document.getElementById('status')
+const toastEl = document.getElementById('toast')
 const searchEl = document.getElementById('search')
 const syncEl = document.getElementById('sync')
 const labelFilterEl = document.getElementById('label-filter')
@@ -51,6 +51,31 @@ function titleOf (note) {
   // 흔해졌다 — 그대로 두면 좁은 목록 행에서 "- [ ] " 여섯 글자가 낭비되고,
   // 그 표식은 사용자가 쓴 글자가 아니라 우리가 정한 규약이다.
   return note.title || parseNoteLine((note.text || '').split('\n')[0]).text || '(제목없음)'
+}
+
+// 토스트가 떠 있는 시간. 짧으면 "동기화했습니다"를 읽기 전에 사라지고, 길면
+// 가운데를 오래 가린다.
+const TOAST_MS = 2200
+let toastTimer = null
+
+/**
+ * 시스템 메시지를 창 가운데에 잠깐 띄운다.
+ *
+ * 예전에는 푸터의 <span> 에 눌러 담았는데, 창이 좁으면 버튼들 사이에 끼어
+ * "동/기/화/했/습/니/다" 처럼 세로로 깨졌다 — 목록 창은 360px 까지 좁힐 수 있고
+ * 푸터에는 이미 단추가 다섯이다. 자리를 다투지 않는 곳은 창 위밖에 없다.
+ *
+ * @param {string} message
+ * @param {{hold?: boolean}} [opts] hold 면 다음 토스트가 올 때까지 남는다.
+ *   "동기화하는 중…" 처럼 **결과가 뒤따르는** 진행 문구에 쓴다. 저절로 사라지면
+ *   사용자는 끝난 줄 알고, 실제로는 아직 도는 중이다.
+ */
+function showToast (message, { hold = false } = {}) {
+  clearTimeout(toastTimer)
+  toastEl.textContent = message
+  toastEl.classList.add('show')
+  if (hold) return
+  toastTimer = setTimeout(() => { toastEl.classList.remove('show') }, TOAST_MS)
 }
 
 function showEmpty (message) {
@@ -203,7 +228,7 @@ async function syncNotes () {
   if (syncing) return
   syncing = true
   syncEl.disabled = true
-  statusEl.textContent = '동기화하는 중…'
+  showToast('동기화하는 중…', { hold: true })
   try {
     let res = await window.keepSticky.syncNotes()
 
@@ -213,32 +238,32 @@ async function syncNotes () {
     // 않는다). 사용자가 방금 [동기화] 를 눌렀으니 로그인 창을 띄우는 것이 그
     // 요청의 자연스러운 이어짐이다 — 묻지 않고 연다.
     if (!res.ok && res.code === 'AUTH_REQUIRED') {
-      statusEl.textContent = '재로그인이 필요합니다. 로그인 창을 엽니다…'
+      showToast('재로그인이 필요합니다. 로그인 창을 엽니다…', { hold: true })
       const login = await window.keepSticky.relogin()
       if (!login.ok) {
-        statusEl.textContent = `다시 로그인하지 못했습니다: ${login.message}`
+        showToast(`다시 로그인하지 못했습니다: ${login.message}`)
         return
       }
       // 새 자격증명으로 한 번만 다시 시도한다. 여기서 또 인증에 걸리면 되풀이
       // 하지 않는다 — 로그인 창을 무한히 띄우느니 사실대로 알리는 편이 낫다.
-      statusEl.textContent = '다시 로그인했습니다. 동기화하는 중…'
+      showToast('다시 로그인했습니다. 동기화하는 중…', { hold: true })
       res = await window.keepSticky.syncNotes()
     }
 
     if (!res.ok) {
-      statusEl.textContent = res.code === 'AUTH_REQUIRED'
+      showToast(res.code === 'AUTH_REQUIRED'
         ? '재로그인했지만 여전히 인증에 실패합니다.'
-        : `동기화하지 못했습니다: ${res.message}`
+        : `동기화하지 못했습니다: ${res.message}`)
       return
     }
     const visibleIds = await window.keepSticky.visibleIds()
     applyNotesAndVisible(res.notes, visibleIds)
-    statusEl.textContent = '동기화했습니다'
+    showToast('동기화했습니다')
   } catch (err) {
     // notes:sync 는 { ok:false } 로 실패를 돌려주는 것이 정상 경로지만,
     // IPC 자체가 끊기는 것처럼 던지는 경로도 이론상 남아 있을 수 있다 —
     // 여기서도 침묵하지 않는다.
-    statusEl.textContent = err && err.message ? `동기화하지 못했습니다: ${err.message}` : '동기화하지 못했습니다'
+    showToast(err && err.message ? `동기화하지 못했습니다: ${err.message}` : '동기화하지 못했습니다')
   } finally {
     syncing = false
     syncEl.disabled = false
@@ -248,14 +273,14 @@ syncEl.addEventListener('click', () => { syncNotes() })
 
 document.getElementById('apply').addEventListener('click', async () => {
   if (!notesLoaded) {
-    statusEl.textContent = '메모 목록을 아직 못 불러왔습니다. 잠시 뒤 다시 눌러 주세요.'
+    showToast('메모 목록을 아직 못 불러왔습니다. 잠시 뒤 다시 눌러 주세요.')
     return
   }
   // 화면에 보이는 행이 아니라 **전체** 노트를 훑는다. 검색으로 걸러진 메모의
   // 체크도 그대로 들어간다 — 이 한 줄이 "건드린 적 없는 포스트잇이 조용히
   // 내려가는" 사고를 막는다.
   const checked = selectionToApply(allNotes, checkedIds)
-  statusEl.textContent = '적용 중…'
+  showToast('적용 중…', { hold: true })
   // 체크된 집합을 그대로 넘긴다. 무엇을 열고 무엇을 내릴지는 main 프로세스가
   // selection-reconcile 로 계산한다. 내리는 것은 바탕화면에서 내리는 것이지
   // Keep 메모를 지우는 것이 아니다 — 삭제는 포스트잇 우클릭 경로에만 있다.
@@ -263,9 +288,9 @@ document.getElementById('apply').addEventListener('click', async () => {
   // 창이 닫히더라도 체크 상태는 실제와 맞춰 둔다. 닫기가 어떤 이유로든 안
   // 되면 사용자는 올바른 상태의 창을 그대로 보게 된다.
   await refreshChecks()
-  statusEl.textContent = res.opened === 0 && res.closed === 0
+  showToast(res.opened === 0 && res.closed === 0
     ? '바뀐 것이 없습니다'
-    : `${res.opened}개 띄우고 ${res.closed}개 내렸습니다`
+    : `${res.opened}개 띄우고 ${res.closed}개 내렸습니다`)
   // 반영이 끝났으면 목록 창은 할 일을 다 했다. 앱은 트레이에서 계속 살아 있고,
   // 트레이 아이콘을 누르면 다시 열린다. 창이 사라지면서 이 렌더러도 같이
   // 사라지므로 결과를 기다리지 않는다(기다리면 영영 안 오는 약속이 된다).
@@ -273,11 +298,11 @@ document.getElementById('apply').addEventListener('click', async () => {
 })
 
 document.getElementById('new').addEventListener('click', async () => {
-  statusEl.textContent = '새 메모 만드는 중…'
+  showToast('새 메모 만드는 중…', { hold: true })
   const note = await window.keepSticky.createNote('', '')
   await window.keepSticky.openNote(note.id)
   await reload()
-  statusEl.textContent = '새 메모를 바탕화면에 띄웠습니다'
+  showToast('새 메모를 바탕화면에 띄웠습니다')
 })
 
 // --- Keep 열기 ---------------------------------------------------------------
@@ -291,7 +316,7 @@ document.getElementById('open-keep').addEventListener('click', async () => {
   // 아무 일도 일어나지 않는 것이 제일 나쁘다 — 사용자는 기능이 고장 났다고
   // 읽는다. 브라우저가 없거나 열기가 거절되면 상태 줄로 알린다.
   if (res && res.ok) return
-  statusEl.textContent = '브라우저를 열지 못했습니다.'
+  showToast('브라우저를 열지 못했습니다.')
 })
 
 // --- 검색 ------------------------------------------------------------------
@@ -375,9 +400,9 @@ function buildLabelRows () {
 async function loadLabels () {
   const res = await window.keepSticky.listLabels()
   if (!res.ok) {
-    statusEl.textContent = res.code === 'AUTH_REQUIRED'
+    showToast(res.code === 'AUTH_REQUIRED'
       ? '재로그인이 필요합니다'
-      : `라벨을 불러오지 못했습니다: ${res.message}`
+      : `라벨을 불러오지 못했습니다: ${res.message}`)
     return
   }
   allLabels = Array.isArray(res.labels) ? res.labels : []
@@ -394,10 +419,10 @@ async function renameLabel (label, input) {
   const res = await window.keepSticky.renameLabel(label.id, next)
   if (!res.ok) {
     input.value = label.name
-    statusEl.textContent = `이름을 바꾸지 못했습니다: ${res.message}`
+    showToast(`이름을 바꾸지 못했습니다: ${res.message}`)
     return
   }
-  statusEl.textContent = `'${label.name}' 을 '${res.label.name}' 으로 바꿨습니다`
+  showToast(`'${label.name}' 을 '${res.label.name}' 으로 바꿨습니다`)
   await loadLabels()
   // 행에 붙은 칩의 글자도 바뀌어야 한다. 노트가 들고 있는 것은 이름의 복사본이다.
   await reload()
@@ -413,10 +438,10 @@ async function deleteLabel (label) {
   if (!ok) return
   const res = await window.keepSticky.deleteLabel(label.id)
   if (!res.ok) {
-    statusEl.textContent = `라벨을 지우지 못했습니다: ${res.message}`
+    showToast(`라벨을 지우지 못했습니다: ${res.message}`)
     return
   }
-  statusEl.textContent = `'${label.name}' 라벨을 지웠습니다`
+  showToast(`'${label.name}' 라벨을 지웠습니다`)
   await loadLabels()
   await reload()
 }
@@ -426,11 +451,11 @@ async function addLabel () {
   if (name === '') return
   const res = await window.keepSticky.createLabel(name)
   if (!res.ok) {
-    statusEl.textContent = `라벨을 만들지 못했습니다: ${res.message}`
+    showToast(`라벨을 만들지 못했습니다: ${res.message}`)
     return
   }
   newLabelEl.value = ''
-  statusEl.textContent = `'${res.label.name}' 라벨을 만들었습니다`
+  showToast(`'${res.label.name}' 라벨을 만들었습니다`)
   await loadLabels()
 }
 
@@ -568,7 +593,7 @@ window.keepSticky.onNotesChanged(() => {
   reload().catch(() => {
     // 다시 못 받아왔다면 화면은 직전 목록 그대로 둔다 — 여기서 목록을 비우면
     // 사용자가 보고 있던 것이 통째로 사라진다. 상태 줄로만 알린다.
-    statusEl.textContent = '목록을 새로 고치지 못했습니다.'
+    showToast('목록을 새로 고치지 못했습니다.')
   })
 })
 
@@ -615,5 +640,5 @@ reload().then(() => {
   // (syncNotes 는 스스로 실패를 삼키고 상태 줄에 남기므로 여기 오지 않는다.)
   listEl.textContent = ''
   showEmpty('메모 목록을 불러오지 못했습니다.')
-  statusEl.textContent = err && err.message ? err.message : '메모 목록을 불러오지 못했습니다.'
+  showToast(err && err.message ? err.message : '메모 목록을 불러오지 못했습니다.')
 })

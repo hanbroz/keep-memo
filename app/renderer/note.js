@@ -81,6 +81,7 @@ const status = document.getElementById('status')
 const badge = document.getElementById('badge')
 const bookmark = document.getElementById('bookmark')
 const bookmarkLabel = document.getElementById('bookmark-label')
+const toastEl = document.getElementById('toast')
 const onTopButton = document.getElementById('pin')
 const archiveButton = document.getElementById('archive')
 // Keep 의 '고정됨'. 위 onTopButton(압정, 항상 위)과 다른 것이라 이름을 각자의
@@ -115,6 +116,32 @@ let globalFont = DEFAULT_FONT_SETTINGS
 let noteFontOverride = null
 // 휴지통 요청이 이미 하나 나가 있는가. 확인 대화상자를 두 번 띄우지 않는다.
 let trashing = false
+
+// 토스트가 떠 있는 시간. 목록 창과 같은 값이다 — 두 창의 알림이 서로 다른
+// 속도로 사라지면 같은 앱으로 느껴지지 않는다.
+const TOAST_MS = 2200
+let toastTimer = null
+
+/**
+ * 사용자가 직접 누른 일의 결과를 창 가운데에 잠깐 띄운다.
+ *
+ * **상단 바의 #status 와 역할이 갈린다.** 이쪽은 알림(보관·라벨·고정·삭제·주소
+ * 열기)이고, 저쪽은 저장/불러오기 상태다. 저장 상태를 토스트로 옮기지 않은
+ * 이유가 둘 있다: '저장됨'은 자동 저장마다 갱신되므로 글 쓰는 내내 본문
+ * 한가운데에서 번쩍이게 되고, '저장 실패 — 편집본 보관됨'은 반대로 저절로
+ * 사라지면 안 되는 경고다.
+ *
+ * @param {string} message
+ * @param {{hold?: boolean}} [opts] hold 면 다음 토스트가 올 때까지 남는다.
+ *   "보관하는 중…" 처럼 결과가 뒤따르는 진행 문구에 쓴다.
+ */
+function showToast (message, { hold = false } = {}) {
+  clearTimeout(toastTimer)
+  toastEl.textContent = message
+  toastEl.classList.add('show')
+  if (hold) return
+  toastTimer = setTimeout(() => { toastEl.classList.remove('show') }, TOAST_MS)
+}
 
 // Keep 이 실제로 지원하는 12색. 이름은 gkeepapi.node.ColorValue 의 멤버
 // 이름과 정확히 같아야 한다 — 그래야 body.dataset.color 를 통해 note.html 의
@@ -417,7 +444,7 @@ function doUndo () {
   const state = undoStep(undoHistory)
   if (!state) {
     // 아무 일도 안 일어나는 것이 제일 나쁘다. 바닥에 닿았으면 그렇다고 말한다.
-    status.textContent = '더 되돌릴 것이 없습니다'
+    showToast('더 되돌릴 것이 없습니다')
     return
   }
   breakTypingGroup()
@@ -428,7 +455,7 @@ function doRedo () {
   if (!loaded) return
   const state = redoStep(undoHistory)
   if (!state) {
-    status.textContent = '다시 할 것이 없습니다'
+    showToast('다시 할 것이 없습니다')
     return
   }
   breakTypingGroup()
@@ -447,7 +474,7 @@ function lineIndexOfInput (target) {
  * 조용히 아무 일도 안 하지 않고 이유를 말한다.
  */
 function refuseStructuralEdit () {
-  status.textContent = '폰에서 만든 체크리스트에서는 줄을 더하거나 지울 수 없습니다'
+  showToast('폰에서 만든 체크리스트에서는 줄을 더하거나 지울 수 없습니다')
 }
 
 /**
@@ -575,7 +602,7 @@ function replaceLineWithText (index, mergedText, tailLength) {
 function toggleLineKind () {
   if (!loaded) return
   if (isNativeList) {
-    status.textContent = '폰에서 만든 체크리스트는 모든 줄이 항목입니다'
+    showToast('폰에서 만든 체크리스트는 모든 줄이 항목입니다')
     return
   }
   if (noteLines.length === 0) return
@@ -583,7 +610,7 @@ function toggleLineKind () {
   // 없으면) focusedLine 은 "지금 이 줄"이 아니다. 그 값을 믿고 바꾸면 사용자가
   // 보고 있지도 않은 줄이 바뀌고 포커스까지 그리로 끌려간다.
   if (!caretInBody) {
-    status.textContent = '체크리스트로 만들 줄에 먼저 커서를 두세요'
+    showToast('체크리스트로 만들 줄에 먼저 커서를 두세요')
     return
   }
   // 조합 중에는 다시 그리지 않는다. 만들던 글자가 사라진다.
@@ -759,18 +786,18 @@ async function selectColor (name) {
     await flush()
   }
 
-  status.textContent = '색상 변경 중'
+  showToast('색상 변경 중', { hold: true })
   const res = await window.keepSticky.updateNote(noteId, { color: name })
   if (!res.ok) {
     document.body.dataset.color = previousColor
     markCurrentColor()
-    status.textContent = res.code === 'AUTH_REQUIRED' ? '재로그인 필요' : '색상 변경 실패'
+    showToast(res.code === 'AUTH_REQUIRED' ? '재로그인 필요' : '색상 변경 실패')
     colorSaving = false
     return
   }
   document.body.dataset.color = res.note.color
   markCurrentColor()
-  status.textContent = '저장됨'
+  showToast('저장됨')
   colorSaving = false
 }
 
@@ -1305,25 +1332,25 @@ archiveButton.addEventListener('click', async () => {
   const next = archiveButton.getAttribute('aria-pressed') !== 'true'
   const previous = !next
   showArchiveState(next)
-  status.textContent = next ? '보관하는 중…' : '보관 해제하는 중…'
+  showToast(next ? '보관하는 중…' : '보관 해제하는 중…', { hold: true })
   try {
     const res = await window.keepSticky.updateNote(noteId, { archived: next })
     if (!res.ok) {
       // 실패했으면 단추가 거짓말을 하고 있으면 안 된다.
       showArchiveState(previous)
-      status.textContent = res.code === 'AUTH_REQUIRED'
+      showToast(res.code === 'AUTH_REQUIRED'
         ? '재로그인이 필요합니다'
-        : `보관하지 못했습니다: ${res.message}`
+        : `보관하지 못했습니다: ${res.message}`)
       return
     }
     // 사이드카가 확인해 준 값으로 다시 맞춘다(색과 같은 관례다).
     showArchiveState(res.note ? res.note.archived : next)
     // 창은 그대로 남는다. 눌린 압정과 마찬가지로 단추의 상태가 결과를 말해 주고,
     // 이 문구가 그것을 한 번 더 확인해 준다. 내리고 싶으면 ✕ 가 따로 있다.
-    status.textContent = next ? '보관했습니다' : '보관을 해제했습니다'
+    showToast(next ? '보관했습니다' : '보관을 해제했습니다')
   } catch (err) {
     showArchiveState(previous)
-    status.textContent = err && err.message ? `보관하지 못했습니다: ${err.message}` : '보관하지 못했습니다'
+    showToast(err && err.message ? `보관하지 못했습니다: ${err.message}` : '보관하지 못했습니다')
   } finally {
     archiveSaving = false
   }
@@ -1387,22 +1414,22 @@ async function toggleLabel (label, check) {
   if (check.checked) next.add(label.id)
   else next.delete(label.id)
 
-  status.textContent = check.checked ? '라벨 붙이는 중…' : '라벨 떼는 중…'
+  showToast(check.checked ? '라벨 붙이는 중…' : '라벨 떼는 중…', { hold: true })
   try {
     const res = await window.keepSticky.setNoteLabels(noteId, [...next])
     if (!res.ok) {
       check.checked = noteLabelIds.has(label.id)
-      status.textContent = res.code === 'AUTH_REQUIRED'
+      showToast(res.code === 'AUTH_REQUIRED'
         ? '재로그인이 필요합니다'
-        : `라벨을 바꾸지 못했습니다: ${res.message}`
+        : `라벨을 바꾸지 못했습니다: ${res.message}`)
       return
     }
     // 사이드카가 확인해 준 최종 상태로 맞춘다(색·보관과 같은 관례다).
     applyNoteLabels(res.note && res.note.labels)
-    status.textContent = check.checked ? '라벨을 붙였습니다' : '라벨을 뗐습니다'
+    showToast(check.checked ? '라벨을 붙였습니다' : '라벨을 뗐습니다')
   } catch (err) {
     check.checked = noteLabelIds.has(label.id)
-    status.textContent = err && err.message ? `라벨을 바꾸지 못했습니다: ${err.message}` : '라벨을 바꾸지 못했습니다'
+    showToast(err && err.message ? `라벨을 바꾸지 못했습니다: ${err.message}` : '라벨을 바꾸지 못했습니다')
   } finally {
     labelsSaving = false
     buildLabelChecks()
@@ -1421,7 +1448,7 @@ async function addAndAttachLabel () {
   if (name === '' || !loaded || labelsSaving) return
   const made = await window.keepSticky.createLabel(name)
   if (!made.ok) {
-    status.textContent = `라벨을 만들지 못했습니다: ${made.message}`
+    showToast(`라벨을 만들지 못했습니다: ${made.message}`)
     return
   }
   newNoteLabel.value = ''
@@ -1432,11 +1459,11 @@ async function addAndAttachLabel () {
     if (!res.ok) {
       // 라벨은 만들어졌지만 붙이지는 못했다. 사실대로 알린다 — 목록 창의 필터에
       // 이미 나타나므로 "실패했다"고만 하면 유령이 생긴 것처럼 보인다.
-      status.textContent = `'${made.label.name}' 을 만들었지만 붙이지 못했습니다: ${res.message}`
+      showToast(`'${made.label.name}' 을 만들었지만 붙이지 못했습니다: ${res.message}`)
       return
     }
     applyNoteLabels(res.note && res.note.labels)
-    status.textContent = `'${made.label.name}' 라벨을 붙였습니다`
+    showToast(`'${made.label.name}' 라벨을 붙였습니다`)
   } finally {
     labelsSaving = false
     buildLabelChecks()
@@ -1483,21 +1510,21 @@ pinnedButton.addEventListener('click', async () => {
   const next = pinnedButton.getAttribute('aria-pressed') !== 'true'
   const previous = !next
   showPinnedState(next)
-  status.textContent = next ? '고정하는 중…' : '고정 해제하는 중…'
+  showToast(next ? '고정하는 중…' : '고정 해제하는 중…', { hold: true })
   try {
     const res = await window.keepSticky.updateNote(noteId, { pinned: next })
     if (!res.ok) {
       showPinnedState(previous)
-      status.textContent = res.code === 'AUTH_REQUIRED'
+      showToast(res.code === 'AUTH_REQUIRED'
         ? '재로그인이 필요합니다'
-        : `고정하지 못했습니다: ${res.message}`
+        : `고정하지 못했습니다: ${res.message}`)
       return
     }
     showPinnedState(res.note ? res.note.pinned : next)
-    status.textContent = next ? '고정했습니다' : '고정을 해제했습니다'
+    showToast(next ? '고정했습니다' : '고정을 해제했습니다')
   } catch (err) {
     showPinnedState(previous)
-    status.textContent = err && err.message ? `고정하지 못했습니다: ${err.message}` : '고정하지 못했습니다'
+    showToast(err && err.message ? `고정하지 못했습니다: ${err.message}` : '고정하지 못했습니다')
   } finally {
     pinnedSaving = false
   }
@@ -1712,15 +1739,15 @@ const URL_REFUSAL_MESSAGE = {
 async function openUrlAtCaret (input) {
   const found = urlAtCaret(input.value, input.selectionStart)
   if (!found.ok) {
-    status.textContent = URL_REFUSAL_MESSAGE[found.reason] || '열 수 있는 주소가 아닙니다'
+    showToast(URL_REFUSAL_MESSAGE[found.reason] || '열 수 있는 주소가 아닙니다')
     return
   }
-  status.textContent = '브라우저에서 여는 중'
+  showToast('브라우저에서 여는 중', { hold: true })
   const res = await window.keepSticky.openExternal(found.url)
   // main 이 거절할 수도 있다(렌더러를 통과했더라도). 그때도 조용히 끝내지 않는다.
-  status.textContent = res && res.ok
+  showToast(res && res.ok
     ? '브라우저에서 열었습니다'
-    : (URL_REFUSAL_MESSAGE[res && res.code] || '주소를 열지 못했습니다')
+    : (URL_REFUSAL_MESSAGE[res && res.code] || '주소를 열지 못했습니다'))
 }
 
 // 입력칸에는 링크 요소가 없으므로 누를 대상도, 꾸밀 것도 없다. 대신 클릭이
@@ -1787,7 +1814,7 @@ async function trashCurrentNote () {
   setEditingEnabled(false)
   lookPanel.classList.remove('show')
 
-  status.textContent = '휴지통으로 보내는 중'
+  showToast('휴지통으로 보내는 중', { hold: true })
   const res = await window.keepSticky.trashNote(noteId)
   if (!res.ok) {
     // 실패하면 main 프로세스가 창을 닫지 않으므로 메모와 창은 그대로다. 잠갔던
@@ -1795,11 +1822,11 @@ async function trashCurrentNote () {
     // 사용자가 "휴지통으로 보냈다"고 착각하지 않도록 이유도 알린다.
     setEditingEnabled(true)
     trashing = false
-    status.textContent = res.code === 'AUTH_REQUIRED' ? '재로그인 필요' : '휴지통 이동 실패'
+    showToast(res.code === 'AUTH_REQUIRED' ? '재로그인 필요' : '휴지통 이동 실패')
     return
   }
   // 여기서부터는 main 이 창을 닫는다. 잠금은 그대로 둔다.
-  status.textContent = '휴지통으로 보냈습니다'
+  showToast('휴지통으로 보냈습니다')
 }
 
 deleteButton.addEventListener('click', () => { trashCurrentNote() })
