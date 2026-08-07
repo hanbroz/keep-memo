@@ -1099,6 +1099,18 @@ const UPDATE_INTERVAL_MS = 4 * 60 * 60 * 1000
 // 않게 한다. 앱을 다시 켜면 잊는다 — 그때는 한 번 더 물어볼 만하다.
 let declinedUpdateVersion = null
 
+// 지금 돌고 있는 확인. 없으면 null.
+//
+// **이것이 없으면 대화상자가 쌓인다.** 아래 확인은 dialog.showMessageBox 를
+// await 하는데, 그 약속은 사용자가 버튼을 누를 때까지 몇 시간이고 안 끝난다.
+// 게다가 이 대화상자는 일부러 어느 창에도 매달지 않아(showVersionMismatchDialog
+// 의 설명 참고) 모달이 아니다 — 열려 있어도 다음 호출을 막지 못한다. 그래서
+// 자리를 비운 사이 4시간마다 오는 주기 확인이 그대로 들어와 창을 한 장씩 더
+// 얹는다. declinedUpdateVersion 은 여기서 아무 도움이 안 된다 — 그것은 [취소]
+// 를 **누른** 경우의 기억이고, 답하지 않은 창은 아무것도 누른 것이 아니다.
+// 아침에 열 장이 쌓여 있던 것이 이 경로다.
+let updateCheckInFlight = null
+
 /** 이 빌드의 "yyyy.MM.dd.HH.mm". 개발 실행에는 없다(그때는 확인하지 않는다). */
 function currentBuildStamp () {
   try {
@@ -1162,8 +1174,30 @@ async function downloadUpdate (asset, targetDir) {
  * @param {{silent: boolean}} opts silent 면 "최신입니다" 같은 결과를 알리지
  *   않는다. 시작할 때의 자동 확인이 그렇다 — 켤 때마다 대화상자가 뜨면 안 된다.
  *   트레이에서 사용자가 직접 부른 경우는 반대로 반드시 결과를 말해야 한다.
+ *
+ * 확인은 한 번에 하나만 돈다. 이미 돌고 있으면 그 약속을 그대로 돌려준다 —
+ * 사용자가 답할 수 있는 창은 어차피 하나뿐이라, 두 번째 창부터는 안내가 아니라
+ * 치워야 할 일감일 뿐이다.
  */
 async function checkForUpdate ({ silent }) {
+  if (updateCheckInFlight) {
+    // 트레이에서 직접 부른 경우까지 조용히 삼키면 눌러도 아무 일이 안 일어난다 —
+    // 이 앱에서 가장 나쁜 응답이다. 이미 떠 있는 창을 가리켜 준다.
+    if (!silent) {
+      dialog.showMessageBox({
+        type: 'info',
+        message: '업데이트를 확인하는 중입니다.',
+        detail: '이미 열려 있는 업데이트 창이 있다면 그 창에서 계속 진행해 주세요.'
+      })
+    }
+    return updateCheckInFlight
+  }
+  updateCheckInFlight = runUpdateCheck({ silent })
+    .finally(() => { updateCheckInFlight = null })
+  return updateCheckInFlight
+}
+
+async function runUpdateCheck ({ silent }) {
   const stamp = currentBuildStamp()
   const exePath = process.env.PORTABLE_EXECUTABLE_FILE || null
 
