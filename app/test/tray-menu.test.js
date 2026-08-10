@@ -6,13 +6,15 @@ const { trayMenuTemplate, TRAY_TOOLTIP } = require('../tray-menu')
 const noop = () => {}
 const build = (over = {}) =>
   trayMenuTemplate({
-    onOpenList: noop, onRelogin: noop, onCheckUpdate: noop, onToggleAutoLaunch: noop, onQuit: noop, ...over
+    onOpenList: noop, onRelogin: noop, onCheckUpdate: noop, onToggleAutoLaunch: noop,
+    onOpenDevTools: noop, onQuit: noop, ...over
   })
 
 test('메뉴 항목과 순서가 고정돼 있다', () => {
   const labels = build().filter((i) => i.label).map((i) => i.label)
   assert.deepStrictEqual(labels,
-    ['메모 목록 열기', '다시 로그인', '업데이트 확인', '윈도우 시작할 때 실행', '종료'])
+    ['메모 목록 열기', '다시 로그인', '업데이트 확인', '윈도우 시작할 때 실행',
+     '개발자 도구', '종료'])
 })
 
 test('각 항목이 넘겨준 핸들러에 연결된다', () => {
@@ -21,9 +23,11 @@ test('각 항목이 넘겨준 핸들러에 연결된다', () => {
   let relogin = 0
   let update = 0
   let autoLaunch = 0
+  let devTools = 0
   const items = trayMenuTemplate({
     onOpenList: () => opened++, onRelogin: () => relogin++,
-    onCheckUpdate: () => update++, onToggleAutoLaunch: () => autoLaunch++, onQuit: () => quit++
+    onCheckUpdate: () => update++, onToggleAutoLaunch: () => autoLaunch++,
+    onOpenDevTools: () => devTools++, onQuit: () => quit++
   })
   const byLabel = (label) => items.find((i) => i.label === label)
 
@@ -42,6 +46,10 @@ test('각 항목이 넘겨준 핸들러에 연결된다', () => {
   byLabel('윈도우 시작할 때 실행').click()
   assert.strictEqual(autoLaunch, 1)
   assert.strictEqual(quit, 0, '시작 프로그램 토글이 앱을 끝내면 안 된다')
+
+  byLabel('개발자 도구').click()
+  assert.strictEqual(devTools, 1)
+  assert.strictEqual(quit, 0, '개발자 도구가 앱을 끝내면 안 된다')
 
   byLabel('종료').click()
   assert.strictEqual(quit, 1)
@@ -65,6 +73,9 @@ test('핸들러가 빠지면 조용히 죽은 메뉴를 만들지 않고 던진�
     TypeError, 'onCheckUpdate 가 빠져도 던져야 한다')
   assert.throws(() => trayMenuTemplate({ onOpenList: noop, onRelogin: noop, onCheckUpdate: noop, onQuit: 'app.quit()' }),
     TypeError)
+  assert.throws(() => trayMenuTemplate({
+    onOpenList: noop, onRelogin: noop, onCheckUpdate: noop, onToggleAutoLaunch: noop, onQuit: noop
+  }), TypeError, 'onOpenDevTools 가 빠져도 던져야 한다')
 })
 
 test('시작 프로그램 항목은 지금 설정을 그대로 비춘다', () => {

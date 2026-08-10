@@ -652,6 +652,40 @@ function applyMinimalMenu () {
   ]))
 }
 
+// 마지막으로 포커스를 받은 창. 트레이의 [개발자 도구] 가 **어느 창을 열지**
+// 정하는 데에만 쓴다. 트레이 메뉴를 여는 순간 포커스는 이미 창을 떠나 있어
+// BrowserWindow.getFocusedWindow() 가 null 을 주기 때문이다 — 그것만 믿으면
+// 정작 이상해 보이는 그 창이 아니라 엉뚱한 창이 열린다.
+//
+// 창을 만드는 곳(createNoteWindow / createListWindow / 로그인 창…)마다 리스너를
+// 다는 대신 app 이벤트 하나로 받는다. 나중에 창이 하나 더 생겨도 여기 손댈 일이
+// 없고, 손대는 것을 잊어 조용히 빠지는 창도 없다.
+let lastFocusedWindow = null
+app.on('browser-window-focus', (_e, win) => { lastFocusedWindow = win })
+
+/**
+ * 지금 보고 있는 창의 개발자 도구를 연다.
+ *
+ * **mode: 'detach' 여야 한다.** 붙여서 열면 DevTools 가 창 안의 폭을 가져가
+ * 페이지가 다시 레이아웃되는데, 이 통로를 쓰는 상황이 바로 "화면이 이상하다"
+ * 이므로 들여다보는 행위가 증상을 지워 버리면 안 된다.
+ */
+function openDevToolsForActiveWindow () {
+  const win = [lastFocusedWindow, BrowserWindow.getFocusedWindow(), ...BrowserWindow.getAllWindows()]
+    .find((w) => w && !w.isDestroyed())
+  if (!win) {
+    // 트레이만 남고 창이 하나도 없을 수 있다. 눌렀는데 아무 일도 안 일어나는
+    // 것이 이 앱에서 가장 나쁜 응답이므로 왜 안 되는지 말해 준다.
+    dialog.showMessageBox({
+      type: 'info',
+      message: '열려 있는 창이 없습니다.',
+      detail: '메모 목록이나 포스트잇을 먼저 연 뒤 다시 눌러 주세요.'
+    })
+    return
+  }
+  win.webContents.openDevTools({ mode: 'detach' })
+}
+
 /**
  * 트레이 아이콘을 만든다. 실패하면 던진다 — 부르는 쪽(ensureTray)이 처리한다.
  *
@@ -685,6 +719,9 @@ function createTray () {
       store.save()
       applyAutoLaunch()
     },
+    // 배포본에는 메뉴가 없어(applyMinimalMenu) Ctrl+Shift+I 도 없다. 화면이
+    // 이상할 때 그 창의 DOM 을 볼 수 있는 유일한 통로다.
+    onOpenDevTools: openDevToolsForActiveWindow,
     // 트레이의 [종료]도 반드시 app.quit() 을 거친다. 미저장 편집 flush 와
     // 사이드카 정리는 전부 before-quit / will-quit 에 있고, 그 경로를
     // 건너뛰면 편집이 소리 없이 사라지고 파이썬 자식이 살아남는다.

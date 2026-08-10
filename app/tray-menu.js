@@ -31,21 +31,30 @@ const TRAY_TOOLTIP = 'Keep 메모'
  * 두는 이유는 [다시 로그인]과 같다 — 목록 창은 닫아 둘 수 있고 트레이는 언제나
  * 거기 있다. 체크 상태는 부르는 쪽이 state.json 에서 읽어 넘긴다.
  *
+ * [개발자 도구]도 여기 둔다. applyMinimalMenu() 가 Windows 에서 응용 프로그램
+ * 메뉴를 통째로 없애므로(Ctrl+Shift+I 도 같이 사라진다) 배포본에는 화면이
+ * 이상할 때 그 창의 DOM 을 들여다볼 길이 하나도 없다. 실제로 그 때문에 업데이트
+ * 직후 목록 창이 <style> 원문을 통째로 노출한 증상을 두고, 살아 있는 창에
+ * `getComputedStyle(document.head).display` 한 줄만 물으면 끝났을 것을 바깥에서
+ * 한참 좁혀야 했다. 눈이 없으면 추측으로 고치게 된다.
+ *
  * @param {{onOpenList: Function, onRelogin: Function, onCheckUpdate: Function,
- *          onToggleAutoLaunch: Function, onQuit: Function,
+ *          onToggleAutoLaunch: Function, onOpenDevTools: Function, onQuit: Function,
  *          autoLaunchEnabled?: boolean}} actions
  * @returns {Array<object>} Menu.buildFromTemplate 에 그대로 넘길 배열
  */
 function trayMenuTemplate ({
-  onOpenList, onRelogin, onCheckUpdate, onToggleAutoLaunch, onQuit, autoLaunchEnabled = false
+  onOpenList, onRelogin, onCheckUpdate, onToggleAutoLaunch, onOpenDevTools, onQuit,
+  autoLaunchEnabled = false
 }) {
   if (typeof onOpenList !== 'function' || typeof onRelogin !== 'function' ||
       typeof onCheckUpdate !== 'function' || typeof onToggleAutoLaunch !== 'function' ||
-      typeof onQuit !== 'function') {
+      typeof onOpenDevTools !== 'function' || typeof onQuit !== 'function') {
     // 핸들러가 빠진 메뉴는 눌러도 아무 일이 없다. 트레이가 앱에 닿는 유일한
     // 길이므로, 조용히 죽은 메뉴를 만드느니 만들 때 터지는 편이 낫다.
     throw new TypeError(
-      '트레이 메뉴에는 onOpenList, onRelogin, onCheckUpdate, onToggleAutoLaunch, onQuit 이 모두 필요하다')
+      '트레이 메뉴에는 onOpenList, onRelogin, onCheckUpdate, onToggleAutoLaunch, ' +
+      'onOpenDevTools, onQuit 이 모두 필요하다')
   }
   return [
     { label: '메모 목록 열기', click: onOpenList },
@@ -60,6 +69,11 @@ function trayMenuTemplate ({
       checked: !!autoLaunchEnabled,
       click: onToggleAutoLaunch
     },
+    { type: 'separator' },
+    { label: '개발자 도구', click: onOpenDevTools },
+    // 구분선을 하나 더 쓴다. [종료] 는 바로 위 항목과 붙어 있으면 안 된다 —
+    // 한 칸 잘못 눌러 앱이 꺼지는 일을 막으려고 원래 있던 규칙이고, 항목이
+    // 하나 늘었다고 그것을 무를 이유는 없다.
     { type: 'separator' },
     { label: '종료', click: onQuit }
   ]
