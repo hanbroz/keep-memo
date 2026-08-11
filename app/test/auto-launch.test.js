@@ -3,9 +3,9 @@ const test = require('node:test')
 const assert = require('node:assert')
 const { decideAutoLaunch } = require('../auto-launch')
 
-const EXE = 'D:\\Apps\\KeepSticky-2026.08.05.17.59.exe'
+const EXE = 'C:\\Users\\me\\AppData\\Local\\Programs\\keep-sticky\\Keep Sticky.exe'
 
-test('켜져 있으면 포터블 원본 exe 를 건다', () => {
+test('켜져 있으면 지금 실행 중인 exe 를 건다', () => {
   assert.deepStrictEqual(decideAutoLaunch(true, EXE), { action: 'enable', path: EXE })
 })
 
@@ -15,7 +15,7 @@ test('꺼져 있으면 끈다 — 끌 때도 같은 경로를 함께 준다', ()
   assert.deepStrictEqual(decideAutoLaunch(false, EXE), { action: 'disable', path: EXE })
 })
 
-test('개발 실행(포터블 경로 없음)에서는 시작 프로그램을 건드리지 않는다', () => {
+test('개발 실행(exe 경로 없음)에서는 시작 프로그램을 건드리지 않는다', () => {
   // **이 검사가 이 파일에서 제일 중요하다.** 여기서 skip 하지 않으면 npm start
   // 한 번이 node_modules 안의 electron.exe 를 윈도우 시작 프로그램에 등록하고,
   // 개발자는 재부팅할 때마다 뜨는 빈 Electron 창을 영영 달고 산다.
@@ -35,14 +35,14 @@ test('경로의 앞뒤 공백은 떼고 건다', () => {
   assert.deepStrictEqual(decideAutoLaunch(true, `  ${EXE}  `), { action: 'enable', path: EXE })
 })
 
-test('업데이트로 exe 이름이 바뀌면 새 exe 를 건다', () => {
-  // 이 앱의 exe 이름에는 빌드 시각이 들어 있고, 자동 업데이트는 새 exe 를 옆에
-  // 받아 그것으로 재시작한다. 뜰 때마다 다시 걸기 때문에 그 재시작이 이 경로를
-  // 지나며 최신으로 낫는다 — 안 그러면 재부팅 때마다 옛 버전이 조용히 뜬다.
-  const older = 'D:\\Apps\\KeepSticky-2026.08.05.16.52.exe'
-  const newer = 'D:\\Apps\\KeepSticky-2026.08.05.17.59.exe'
-  assert.strictEqual(decideAutoLaunch(true, older).path, older)
-  assert.strictEqual(decideAutoLaunch(true, newer).path, newer)
+test('경로가 바뀌면 새 경로를 건다 — 옛 포터블 등록이 이 길로 낫는다', () => {
+  // 포터블로 쓰던 사용자의 레지스트리에는 아직 D:\KeepSticky-<스탬프>.exe 가
+  // 걸려 있다. 그 파일은 지워지지 않으므로 실패하지도 않고, 재부팅 때마다 조용히
+  // 옛 포터블이 뜬다 — %TEMP% 삭제 문제로 그대로 돌아간다. 뜰 때마다 지금 exe 로
+  // 다시 걸기 때문에 설치본이 한 번 뜨는 것만으로 그 자리에서 낫는다.
+  const oldPortable = 'D:\\KeepSticky-2026.08.10.13.58.exe'
+  assert.strictEqual(decideAutoLaunch(true, oldPortable).path, oldPortable)
+  assert.strictEqual(decideAutoLaunch(true, EXE).path, EXE)
 })
 
 test('Electron 없이도 require 된다', () => {

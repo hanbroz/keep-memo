@@ -17,7 +17,13 @@
     "productName": "Keep Sticky",
     "files": ["app/**/*", "package.json"],
     "extraResources": [{ "from": "dist-py/keep_service.exe", "to": "keep_service.exe" }],
-    "artifactName": "KeepSticky-${env.BUILD_STAMP}.${ext}",
-    "win": { "target": "portable", "icon": "google-keep-electron.ico" }
+    "artifactName": "KeepSticky-Setup-${env.BUILD_STAMP}.${ext}",
+    "win": { "target": "nsis", "icon": "google-keep-electron.ico" },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "runAfterFinish": true,
+      "shortcutName": "Keep 메모"
+    }
   }
 }

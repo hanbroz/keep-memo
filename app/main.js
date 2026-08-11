@@ -29,7 +29,7 @@ const { sanitizeUrl, keepListUrl } = require('./renderer/url-open')
 const { decideUpdate } = require('./update-check')
 // 재부팅 뒤에도 이 앱이 트레이에 있어야 메모 앱 노릇을 한다. 무엇을 시작
 // 프로그램으로 걸지(그리고 개발 실행에서는 아예 걸지 않을지)는 저 순수 함수가
-// 정한다 — 포터블 exe 의 경로 함정이 그 파일 주석에 있다.
+// 정한다 — 무엇을 걸어야 하고 왜 그런지가 그 파일 주석에 있다.
 const { decideAutoLaunch } = require('./auto-launch')
 const { trayMenuTemplate, TRAY_TOOLTIP } = require('./tray-menu')
 const { TRAY_ICON_DATA_URL } = require('./tray-icon')
@@ -77,16 +77,21 @@ const {
 // "종료하고 새 버전을 실행"하려면, 지금 이 프로세스가 실제로 어떤 exe 였는지를
 // 알아야 하기 때문이다. 이 프로세스는 잠금 획득에 실패하면 바로 아래에서 죽으므로
 // (그리고 죽은 뒤에는 아무것도 못 하므로) 그 정보를 알릴 수 있는 유일한 시점이
-// 지금이다. process.env.PORTABLE_EXECUTABLE_FILE 은 electron-builder 의 portable
-// 타겟(app-builder-lib/templates/nsis/portable.nsi)이 압축을 풀기 전에 원본
-// exe 경로($EXEPATH, = 사용자가 두 번 클릭한 KeepSticky-*.exe)로 설정해 두는
-// 환경 변수다 — process.execPath(=%TEMP% 밑 압축 해제본)와 다르다. 포터블
-// 빌드가 아닌 실행(예: npm start)에는 이 환경 변수가 없으므로 null 을 보낸다 —
-// version-notice.js 의 extractRelaunchExecPath 가 그 경우를 "재실행 불가"로
-// 다룬다.
+// 지금이다.
+//
+// **설치본에서는 process.execPath 가 곧 그 경로다.** NSIS 설치본은 고정된
+// 자리(%LOCALAPPDATA%\Programs\…)에 풀리고 이름도 빌드마다 같으므로, 지금
+// 실행 중인 exe 경로가 그대로 다시 띄울 수 있는 경로다. 예전 portable 빌드는
+// 그렇지 않아서(process.execPath 가 %TEMP% 밑의 압축 해제본이라 정리되면
+// 사라진다) PORTABLE_EXECUTABLE_FILE 이라는 우회로가 필요했다 — 그 우회로가
+// 필요했던 이유가 곧 portable 을 버린 이유이기도 하다.
+//
+// 개발 실행(npm start)의 execPath 는 node_modules 안의 electron.exe 다. 그것을
+// 재실행 후보로 알리면 안 되므로 null 을 보낸다 — version-notice.js 의
+// extractRelaunchExecPath 가 그 경우를 "재실행 불가"로 다룬다.
 const gotSingleInstanceLock = app.requestSingleInstanceLock({
   version: app.getVersion(),
-  execPath: process.env.PORTABLE_EXECUTABLE_FILE || null
+  execPath: app.isPackaged ? process.execPath : null
 })
 if (!gotSingleInstanceLock) {
   app.quit()
@@ -445,8 +450,8 @@ async function ensureAuth () {
  * 목록 창의 제목. 어느 빌드가 도는지 눈에 보이게 버전을 붙인다.
  *
  * 화면에 버전이 없으면 "업데이트했는데 그대로다" 같은 상황에서 무엇이 도는지
- * 확인할 길이 창 제목 말고는 없다 — 작업 관리자의 프로세스 이름은 포터블
- * 래퍼의 파일 이름일 뿐이라 실제로 실행 중인 빌드와 다를 수 있다.
+ * 확인할 길이 창 제목 말고는 없다 — 작업 관리자의 프로세스 이름은 빌드마다
+ * 같은 "Keep Sticky.exe" 라 어느 버전인지 말해 주지 않는다.
  *
  * 개발 실행에는 빌드 스탬프가 없다. 그때는 그 사실을 드러낸다 — 개발본을
  * 릴리즈본으로 착각하는 것이 그 반대보다 위험하다.
@@ -763,11 +768,14 @@ function ensureTray () {
  * 여기서 던지면 whenReady 가 통째로 무너져 앱이 아예 안 뜬다.
  */
 function applyAutoLaunch () {
-  const decision = decideAutoLaunch(store.getAutoLaunch(), process.env.PORTABLE_EXECUTABLE_FILE)
+  // 설치본에서는 process.execPath 가 고정된 설치 자리의 exe 다. 개발 실행에서는
+  // node_modules 안의 electron.exe 이므로 빈 값을 넘겨 아예 건드리지 않게 한다.
+  const decision = decideAutoLaunch(store.getAutoLaunch(), app.isPackaged ? process.execPath : '')
   if (decision.action === 'skip') return decision
   try {
-    // path 는 Windows 전용 옵션이다(Electron 문서). 안 주면 process.execPath —
-    // 즉 %TEMP% 의 압축 해제본 — 가 걸려 다음 부팅에 조용히 실패한다.
+    // path 를 명시한다. 안 주면 Electron 이 process.execPath 를 쓰는데, 결과는
+    // 같더라도 끌 때(disable)와 켤 때의 모양을 어긋나지 않게 해 둔다 — Electron
+    // 문서: path 를 주고 걸었다면 읽을 때도 같은 path 를 줘야 한다.
     app.setLoginItemSettings({
       openAtLogin: decision.action === 'enable',
       path: decision.path,
@@ -1110,11 +1118,19 @@ function notifyNotesChanged () {
 
 // --- 자동 업데이트 ----------------------------------------------------------
 //
-// 포터블 exe 라 electron-updater 를 쓸 수 없다(그것은 NSIS 설치본을 받아 실행
-// 한다). 대신 이 앱에 이미 있던 조각들을 이어 붙인다: 원본 exe 경로를 아는
-// PORTABLE_EXECUTABLE_FILE, "무엇을 받을지" 정하는 update-check.js, 그리고
-// **다른** exe 를 띄우는 app.relaunch({ execPath }) — 버전 불일치 대화상자가
-// 쓰던 바로 그 경로다. 여기서 새로 하는 일은 릴리즈 조회와 내려받기뿐이다.
+// 릴리즈에 올라온 NSIS 설치본을 받아 **무인 모드로 실행**한다. 설치가 끝나면
+// 설치 관리자가 앱을 다시 띄운다.
+//
+// `/S --force-run` 두 인자가 다 필요하다. app-builder-lib 의
+// templates/nsis/installSection.nsh 를 보면 oneClick 설치본은
+//   ${ifNot} ${Silent} ${orIf} ${isForceRun} → 앱 실행
+// 이다. 즉 /S 만 주면 조용히 설치만 하고 앱은 영영 안 돌아온다 — 사용자 눈에는
+// "업데이트를 눌렀더니 앱이 사라졌다"가 된다. --force-run 이 그것을 막는다.
+//
+// electron-updater 를 붙이지 않는 이유: 이미 있는 조각(update-check.js 의
+// decideUpdate 와 그 테스트)으로 충분하고, 그것을 쓰려면 latest.yml 발행과
+// 의존성이 하나 더 늘어난다. 여기서 하는 일은 릴리즈 조회, 내려받기, 설치본
+// 실행 셋뿐이다.
 
 const UPDATE_REPO = 'hanbroz/keep-memo'
 const UPDATE_API = `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`
@@ -1174,12 +1190,11 @@ async function fetchLatestRelease () {
 }
 
 /**
- * 새 exe 를 지금 실행 중인 exe **옆에** 내려받는다.
+ * 설치본을 임시 폴더에 내려받는다.
  *
- * 실행 중인 파일을 덮어쓰지 않는 것이 요점이다. 포터블 exe 의 이름에는 이미
- * 버전이 들어 있으므로(KeepSticky-yyyy.MM.dd.HH.mm.exe) 새 이름으로 나란히
- * 받으면 되고, 그러면 윈도우의 파일 잠금과 씨름할 일이 없다. 옛 파일은 남는다 —
- * 지우는 것은 사용자 몫이다. 우리가 지웠다가 되돌릴 방법이 없다.
+ * 설치 자리(%LOCALAPPDATA%\Programs\…) 안에 받지 않는다. 그 안의 파일은 곧
+ * 설치 관리자가 갈아엎을 대상이고, 받다 만 exe 가 그 사이에 끼어 있으면 무엇이
+ * 설치본이고 무엇이 앱인지 구별할 수 없게 된다.
  *
  * .part 로 받아 다 받은 뒤에 이름을 바꾼다. 중간에 끊긴 파일이 실행 가능한
  * 이름을 갖고 있으면 사용자가 그것을 두 번 클릭한다.
@@ -1236,7 +1251,6 @@ async function checkForUpdate ({ silent }) {
 
 async function runUpdateCheck ({ silent }) {
   const stamp = currentBuildStamp()
-  const exePath = process.env.PORTABLE_EXECUTABLE_FILE || null
 
   let decision
   try {
@@ -1252,19 +1266,6 @@ async function runUpdateCheck ({ silent }) {
     if (!silent) dialog.showMessageBox({ type: 'info', message: decision.reason })
     return
   }
-  // 받을 것이 있는데 어디에 둘지 모른다(포터블이 아닌 실행). 조용히 삼키지 않고
-  // 직접 받을 수 있게 알려 준다.
-  if (!exePath) {
-    if (!silent) {
-      dialog.showMessageBox({
-        type: 'info',
-        message: `새 버전 ${decision.version} 이 있습니다.`,
-        detail: '이 실행 방식에서는 자동으로 받을 수 없습니다. 릴리즈 페이지에서 직접 받아 주세요.'
-      })
-    }
-    return
-  }
-
   // 자동 확인에서 이미 거절한 버전은 다시 묻지 않는다. 주기적으로 확인하므로
   // 이 기억이 없으면 [취소] 를 누른 사용자에게 같은 것을 몇 시간마다 다시 묻게
   // 된다 — 그건 알림이 아니라 잔소리다. 트레이에서 직접 물어보는 경우(silent
@@ -1281,25 +1282,31 @@ async function runUpdateCheck ({ silent }) {
     // CSS 를 걸 수 있는 곳이 아니라(OS 가 그린다) 줄바꿈을 직접 넣는 수밖에 없다.
     message: `새로운 업데이트 ver. ${decision.version} 가 있습니다.\n업데이트 하시겠습니까?`,
     detail: `지금 버전: ${stamp}\n받을 파일: ${decision.name}\n\n` +
-            '받는 동안 잠시 걸립니다. 다 받으면 지금 창들을 정리하고 새 버전으로 다시 시작합니다.'
+            '받는 동안 잠시 걸립니다. 다 받으면 지금 창들을 정리하고, 설치한 뒤 새 버전으로 다시 시작합니다.'
   })
   if (ask.response !== 0) {
     declinedUpdateVersion = decision.version
     return
   }
 
-  let downloaded
+  let installer
   try {
-    downloaded = await downloadUpdate(decision, path.dirname(exePath))
+    installer = await downloadUpdate(decision, app.getPath('temp'))
   } catch (err) {
     dialog.showMessageBox({ type: 'error', message: '업데이트를 받지 못했습니다.', detail: err.message })
     return
   }
 
-  // 여기서부터는 버전 불일치 대화상자가 쓰던 경로 그대로다. relaunch 예약을
-  // app.quit() **보다 먼저** 걸어야 하고, 실제 종료 절차(미저장 편집 flush →
-  // 사이드카 정리)는 app.quit() 이 트리거하는 before-quit 이 맡는다.
-  app.relaunch({ execPath: downloaded })
+  // 여기서부터는 버전 불일치 대화상자가 쓰던 경로 그대로다 — 다만 다시 띄우는
+  // 것이 앱이 아니라 설치 관리자다. relaunch 예약을 app.quit() **보다 먼저**
+  // 걸어야 하고, 실제 종료 절차(미저장 편집 flush → 사이드카 정리)는 app.quit()
+  // 이 트리거하는 before-quit 이 맡는다.
+  //
+  // **spawn 으로 직접 띄우지 않는 이유가 여기 있다.** app.relaunch 는 지금
+  // 프로세스가 **완전히 끝난 뒤에** 대상을 실행한다. 설치 관리자를 먼저 띄워
+  // 두면 그것이 파일을 갈아엎는 동안 우리는 아직 미저장 편집을 저장하는 중일
+  // 수 있고, 설치 관리자는 실행 중인 앱을 닫으려 든다 — 저장 도중에 죽는다.
+  app.relaunch({ execPath: installer, args: ['/S', '--force-run'] })
   app.quit()
 }
 

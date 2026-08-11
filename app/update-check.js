@@ -8,14 +8,18 @@
 // 그래야 Electron 을 띄우지 않고, 진짜 릴리즈를 만들지 않고도 판단을 검사할 수
 // 있다.
 //
-// **왜 electron-updater 가 아닌가**: 이 앱은 portable 타겟이다. 그것은 설치
-// 프로그램이 아니라 자기 자신을 %TEMP% 에 풀고 실행하는 자체 압축 해제
-// 아카이브이고(app-builder-lib 의 portable.nsi), electron-updater 의 윈도우
-// 경로는 NSIS **설치본**을 받아 실행하는 방식이라 설치할 곳이 없는 포터블에는
-// 쓸 수 없다. 대신 이 앱에는 이미 필요한 조각이 다 있다 — 원본 exe 경로를 아는
-// PORTABLE_EXECUTABLE_FILE 처리와, app.relaunch({ execPath }) 로 **다른** exe 를
-// 띄우는 절차(version-notice.js 의 재실행 경로)다. 여기서는 그 앞에 "무엇을
-// 받을지" 한 조각만 더한다.
+// **왜 electron-updater 가 아닌가**: 그것을 쓰려면 릴리즈마다 latest.yml 을 함께
+// 발행해야 하고 의존성이 하나 는다. 이 앱에는 이미 필요한 조각이 다 있다 —
+// 아래 decideUpdate 와, app.relaunch({ execPath, args }) 로 **다른** exe 를 띄우는
+// 절차(version-notice.js 의 재실행 경로)다. main.js 는 그 두 번째를 그대로 써서
+// 받아 둔 NSIS 설치본을 무인 모드로 띄운다.
+//
+// **왜 더 이상 portable 이 아닌가**: portable 타겟은 실행할 때마다 자기 자신을
+// %TEMP% 에 풀고, 앱이 끝나면 그 폴더를 지운다(app-builder-lib 의 portable.nsi
+// 의 `RMDir /r $INSTDIR`). 트레이에 며칠씩 상주하는 이 앱에게는 그 삭제가
+// **실행 중에** 닥칠 수 있고, 실제로 닥쳤다 — 잠기지 않은 resources.pak 이
+// 지워지자 크로미엄이 UA 스타일시트를 잃어 새로 뜨는 창마다 <head> 가 글자로
+// 노출됐다. 앱이 자기 파일을 남이 지우는 자리에 두고 살 수는 없다.
 
 // 빌드 스탬프의 자리 수. scripts/build.js 의 fullStamp("yyyy.MM.dd.HH.mm")와
 // 같은 모양이어야 한다.
@@ -75,22 +79,26 @@ function stampFromTag (tag) {
 }
 
 /**
- * 릴리즈에 딸린 파일 중 이 앱의 포터블 exe 를 고른다.
+ * 릴리즈에 딸린 파일 중 이 앱의 NSIS 설치본을 고른다.
  *
- * 이름으로 고른다("KeepSticky-" 로 시작하고 ".exe" 로 끝난다). 릴리즈에 나중에
- * 다른 파일(체크섬, 설치본, 소스 zip)이 붙어도 엉뚱한 것을 내려받지 않게 하는
- * 것이 목적이다 — 첫 번째 파일을 그냥 집으면 언젠가 그렇게 된다.
+ * 이름으로 고른다("KeepSticky-Setup-" 으로 시작하고 ".exe" 로 끝난다). 릴리즈에
+ * 다른 파일(체크섬, 소스 zip, 그리고 **옛 포터블 exe**)이 있어도 엉뚱한 것을
+ * 내려받지 않게 하는 것이 목적이다 — 첫 번째 파일을 그냥 집으면 언젠가 그렇게
+ * 된다. 특히 "-Setup-" 까지 요구하는 것이 중요하다: 옛 릴리즈의 포터블 exe 는
+ * `KeepSticky-2026.08.10.13.58.exe` 라 접두사만 보면 통과하는데, 그것을 받아
+ * `/S --force-run` 으로 실행하면 설치가 아니라 포터블 실행이 되고 사용자는
+ * %TEMP% 삭제 문제로 되돌아간다.
  *
  * @param {unknown} assets
  * @returns {{name: string, url: string, size: number} | null}
  */
-function pickPortableAsset (assets) {
+function pickInstallerAsset (assets) {
   if (!Array.isArray(assets)) return null
   for (const asset of assets) {
     if (!asset || typeof asset !== 'object') continue
     const name = typeof asset.name === 'string' ? asset.name : ''
     const url = typeof asset.browser_download_url === 'string' ? asset.browser_download_url : ''
-    if (!/^KeepSticky-.+\.exe$/i.test(name)) continue
+    if (!/^KeepSticky-Setup-.+\.exe$/i.test(name)) continue
     if (!/^https:\/\//i.test(url)) continue
     return { name, url, size: Number.isFinite(asset.size) ? asset.size : 0 }
   }
@@ -134,11 +142,11 @@ function decideUpdate (currentStamp, release) {
     return { action: 'none', reason: '이미 최신 버전입니다.' }
   }
 
-  const asset = pickPortableAsset(release.assets)
+  const asset = pickInstallerAsset(release.assets)
   if (asset === null) {
     // 태그는 새것인데 받을 파일이 없다. 조용히 넘어가면 사용자는 영영 새 버전을
     // 못 받는다 — 릴리즈를 올린 사람이 파일을 빠뜨렸다는 뜻이므로 말해 준다.
-    return { action: 'none', reason: `새 버전 ${latestText} 이 있지만 받을 exe 가 릴리즈에 없습니다.` }
+    return { action: 'none', reason: `새 버전 ${latestText} 이 있지만 받을 설치본이 릴리즈에 없습니다.` }
   }
   return { action: 'update', version: latestText, name: asset.name, url: asset.url, size: asset.size }
 }
@@ -147,7 +155,7 @@ module.exports = {
   parseBuildStamp,
   compareBuildStamps,
   stampFromTag,
-  pickPortableAsset,
+  pickInstallerAsset,
   decideUpdate,
   STAMP_PARTS
 }

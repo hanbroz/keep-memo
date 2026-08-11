@@ -81,14 +81,18 @@ function describeVersionMismatch (runningVersion, incomingVersion) {
 // (app.relaunch({ execPath })). 두 번째 인스턴스가 죽기 전에 자기가 어떤 exe
 // 였는지를 additionalData 에 실어 보내야 하는 이유가 이것이다.
 //
-// 포터블 빌드에서 "자기가 어떤 exe 였는지"는 프로세스 이미지 경로
-// (process.execPath) 가 아니다 — 포터블 exe 는 %TEMP% 밑에 자신을 통째로
-// 압축 해제한 뒤 그 복사본을 실행하므로, process.execPath 는 사용자가 두 번
-// 클릭한 KeepSticky-*.exe 가 아니라 electron-builder 의 NSIS 래퍼가 정리해
-// 버릴 임시 디렉터리 안의 사본을 가리킨다. electron-builder 의 portable
-// 타겟(app-builder-lib/templates/nsis/portable.nsi)은 압축을 풀기 전에
-// `PORTABLE_EXECUTABLE_FILE` 환경 변수를 원본 exe 의 경로($EXEPATH)로 설정해
-// 자식 프로세스에 물려준다 — 이것이 재실행에 써야 할 진짜 경로다.
+// NSIS 설치본에서 "자기가 어떤 exe 였는지"는 그냥 process.execPath 다. 설치
+// 자리가 고정이고 이름도 빌드마다 같으니 그대로 다시 띄울 수 있다.
+//
+// 예전 portable 빌드에서는 그렇지 않았다 — 포터블 exe 는 %TEMP% 밑에 자신을
+// 통째로 풀고 그 사본을 실행하므로 process.execPath 는 곧 정리될 임시 사본을
+// 가리켰고, 그래서 원본 경로를 담은 PORTABLE_EXECUTABLE_FILE 이 필요했다.
+// 그 %TEMP% 정리가 결국 실행 중인 앱을 망가뜨려 설치본으로 옮겼다
+// (update-check.js 의 주석에 그 전말이 있다).
+//
+// 두 인스턴스가 서로 다른 버전일 일은 설치본에서는 거의 없다(설치된 사본이
+// 하나뿐이다). 그래도 이 경로를 남겨 두는 이유는, 옛 포터블을 아직 갖고 있는
+// 사용자가 그것을 두 번 클릭하는 경우가 실제로 남아 있기 때문이다.
 
 /**
  * additionalData 에서 재실행에 쓸 실행 파일 경로를 뽑는다.
@@ -100,7 +104,7 @@ function describeVersionMismatch (runningVersion, incomingVersion) {
  * decideQuitAction() 이 주입받은 checkExists 로 그 다음 단계에서 확인한다.
  *
  * additionalData 가 이 필드를 아예 안 보냈다면(이 기능이 없는 옛 빌드, 또는
- * PORTABLE_EXECUTABLE_FILE 이 없는 개발 실행) 조용히 null 을 돌려준다 —
+ * 재실행하면 안 되는 개발 실행) 조용히 null 을 돌려준다 —
  * extractIncomingVersion() 과 같은 관례다.
  *
  * @param {unknown} additionalData

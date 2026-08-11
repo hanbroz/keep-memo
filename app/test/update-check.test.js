@@ -2,7 +2,7 @@
 const test = require('node:test')
 const assert = require('node:assert')
 const {
-  parseBuildStamp, compareBuildStamps, stampFromTag, pickPortableAsset, decideUpdate
+  parseBuildStamp, compareBuildStamps, stampFromTag, pickInstallerAsset, decideUpdate
 } = require('../update-check')
 
 // 이 파일이 지키는 것: "새 버전이 있는가"를 조용히 틀리지 않는 것. 틀리는 방향이
@@ -14,8 +14,8 @@ const release = (over = {}) => ({
   draft: false,
   prerelease: false,
   assets: [{
-    name: 'KeepSticky-2026.08.05.10.19.exe',
-    browser_download_url: 'https://github.com/hanbroz/keep-memo/releases/download/x/KeepSticky-2026.08.05.10.19.exe',
+    name: 'KeepSticky-Setup-2026.08.05.10.19.exe',
+    browser_download_url: 'https://github.com/hanbroz/keep-memo/releases/download/x/KeepSticky-Setup-2026.08.05.10.19.exe',
     size: 91851348
   }],
   ...over
@@ -78,9 +78,9 @@ test('스탬프 모양이 아닌 태그는 null 이다', () => {
 
 // --- 받을 파일 고르기 ---------------------------------------------------------
 
-test('KeepSticky-*.exe 를 고른다', () => {
-  const asset = pickPortableAsset(release().assets)
-  assert.strictEqual(asset.name, 'KeepSticky-2026.08.05.10.19.exe')
+test('KeepSticky-Setup-*.exe 를 고른다', () => {
+  const asset = pickInstallerAsset(release().assets)
+  assert.strictEqual(asset.name, 'KeepSticky-Setup-2026.08.05.10.19.exe')
   assert.strictEqual(asset.size, 91851348)
 })
 
@@ -88,20 +88,37 @@ test('첫 번째 파일을 그냥 집지 않는다', () => {
   // 릴리즈에 체크섬이나 소스 zip 이 먼저 붙어 있어도 exe 를 찾아야 한다.
   const assets = [
     { name: 'SHA256SUMS.txt', browser_download_url: 'https://x/SHA256SUMS.txt', size: 100 },
-    { name: 'KeepSticky-2026.08.05.10.19.exe', browser_download_url: 'https://x/a.exe', size: 9 }
+    { name: 'KeepSticky-Setup-2026.08.05.10.19.exe', browser_download_url: 'https://x/a.exe', size: 9 }
   ]
-  assert.strictEqual(pickPortableAsset(assets).name, 'KeepSticky-2026.08.05.10.19.exe')
+  assert.strictEqual(pickInstallerAsset(assets).name, 'KeepSticky-Setup-2026.08.05.10.19.exe')
 })
 
 test('https 가 아닌 주소는 받지 않는다', () => {
-  const assets = [{ name: 'KeepSticky-x.exe', browser_download_url: 'http://x/a.exe', size: 1 }]
-  assert.strictEqual(pickPortableAsset(assets), null)
+  const assets = [{ name: 'KeepSticky-Setup-x.exe', browser_download_url: 'http://x/a.exe', size: 1 }]
+  assert.strictEqual(pickInstallerAsset(assets), null)
+})
+
+test('옛 포터블 exe 는 고르지 않는다', () => {
+  // 이 저장소의 옛 릴리즈에는 KeepSticky-<스탬프>.exe 라는 **포터블** exe 가
+  // 들어 있다. 이름이 접두사만 다르므로 "-Setup-" 을 요구하지 않으면 그것이
+  // 통과하고, 그것을 받아 /S --force-run 으로 실행하면 설치가 아니라 포터블
+  // 실행이 된다 — 사용자는 이 릴리즈가 고치려던 %TEMP% 삭제 문제로 되돌아간다.
+  const assets = [
+    { name: 'KeepSticky-2026.08.05.10.19.exe', browser_download_url: 'https://x/old.exe', size: 91851348 }
+  ]
+  assert.strictEqual(pickInstallerAsset(assets), null)
+  // 같은 릴리즈에 둘 다 있으면 설치본을 골라야 한다.
+  const mixed = [
+    ...assets,
+    { name: 'KeepSticky-Setup-2026.08.05.10.19.exe', browser_download_url: 'https://x/new.exe', size: 7 }
+  ]
+  assert.strictEqual(pickInstallerAsset(mixed).name, 'KeepSticky-Setup-2026.08.05.10.19.exe')
 })
 
 test('exe 가 없으면 null 이다', () => {
-  assert.strictEqual(pickPortableAsset([{ name: 'notes.txt', browser_download_url: 'https://x/n.txt' }]), null)
-  assert.strictEqual(pickPortableAsset([]), null)
-  assert.strictEqual(pickPortableAsset(null), null)
+  assert.strictEqual(pickInstallerAsset([{ name: 'notes.txt', browser_download_url: 'https://x/n.txt' }]), null)
+  assert.strictEqual(pickInstallerAsset([]), null)
+  assert.strictEqual(pickInstallerAsset(null), null)
 })
 
 // --- 판단 -------------------------------------------------------------------
@@ -140,12 +157,12 @@ test('초안과 시험판은 건너뛴다', () => {
   assert.strictEqual(decideUpdate('2026.01.01.00.00', release({ prerelease: true })).action, 'none')
 })
 
-test('태그가 새것인데 exe 가 없으면 이유를 말해 준다', () => {
+test('태그가 새것인데 설치본이 없으면 이유를 말해 준다', () => {
   // 조용히 넘어가면 사용자는 영영 새 버전을 못 받는다.
   const res = decideUpdate('2026.08.01.00.00', release({ assets: [] }))
   assert.strictEqual(res.action, 'none')
   assert.match(res.reason, /2026\.08\.05\.10\.19/)
-  assert.match(res.reason, /exe/)
+  assert.match(res.reason, /설치본/)
 })
 
 test('릴리즈가 통째로 이상해도 던지지 않는다', () => {

@@ -1,6 +1,6 @@
 'use strict'
 /**
- * 포터블 exe 빌드 래퍼.
+ * NSIS 설치본 빌드 래퍼.
  *
  * 목적은 하나: 빌드된 exe 가 "최신인지" 파일명과 Windows 파일 속성만 보고
  * 바로 알 수 있게 만드는 것. 그래서:
@@ -16,11 +16,9 @@
  *          buildVersion 필드는 매크로 확장이 안 되기 때문)
  *        - package.json 의 version 에 심어질 3자리 semver 버전
  *          (extraMetadata.version, CLI 오버라이드로 전달 — 저장소의
- *          package.json 파일 자체는 건드리지 않는다). electron-builder
- *          의 portable 타겟은 %TEMP% 밑에 "appId-version" 이름의 디렉터리로
- *          압축을 풀고 이미 있으면 재사용하므로, version 이 매 빌드마다
- *          바뀌지 않으면 오래된 빌드가 풀어둔 파일과 새 빌드가 뒤섞여
- *          실행될 수 있다. 이 필드가 바로 그 충돌을 막는다.
+ *          package.json 파일 자체는 건드리지 않는다). NSIS 설치본은 이
+ *          값으로 "설치된 버전"을 판단해 덮어쓸지 정하므로, 매 빌드마다
+ *          달라져야 새 빌드가 실제로 설치된다.
  *
  * 그리고 Python 사이드카(dist-py/keep_service.exe)가 소스보다 오래됐으면
  * electron-builder 를 부르기 전에 먼저 PyInstaller 로 다시 굽는다. 이걸
