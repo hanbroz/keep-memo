@@ -830,6 +830,22 @@ function createNoteWindow (noteId) {
   win.loadFile(path.join(__dirname, 'renderer', 'note.html'))
   noteWindows.set(noteId, win)
 
+  // 렌더러가 죽으면(크래시·OS 의 강제 종료) 창은 그대로 남고 그림만 사라진다.
+  // 펼친 포스트잇이라면 눈에 띄기라도 하지만, 접힌 책갈피는 44px 짜리 흰 띠가
+  // 되어 **펼칠 수도 닫을 수도 없는 손잡이**로 굳는다 — 클릭을 받을 렌더러가
+  // 없으니 눌러도 아무 일이 없고, 사용자가 할 수 있는 일은 목록 창에서 체크를
+  // 껐다 켜는 우회뿐이다. 한 번은 스스로 되살린다. 되살아나면 아래
+  // did-finish-load 가 접힘 상태를 다시 보내므로 책갈피 글자까지 그대로 돌아온다.
+  //
+  // 한 번뿐인 이유: 죽는 원인이 그대로면 다시 죽고, 그러면 되살리기가 무한
+  // 반복이 된다. 두 번째부터는 그냥 둔다 — 사용자의 우회 경로는 남아 있다.
+  let renderRevived = false
+  win.webContents.on('render-process-gone', () => {
+    if (renderRevived || win.isDestroyed()) return
+    renderRevived = true
+    win.webContents.reload()
+  })
+
   const persistBounds = () => {
     // 접혀 있는 동안(그리고 막 펼친 직후)의 좌표는 책갈피의 것이지 메모의
     // 것이 아니다. 여기서 적으면 펼칠 자리를 잃는다.
