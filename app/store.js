@@ -56,7 +56,7 @@ const DEFAULT_NOTE_STATE = {
 class Store {
   constructor (filePath) {
     this.filePath = filePath
-    this.data = { notes: {}, email: null, fonts: null, list: null, autoLaunch: true }
+    this.data = { notes: {}, email: null, fonts: null, list: null, autoLaunch: true, pendingUpdate: null }
   }
 
   load () {
@@ -71,7 +71,13 @@ class Store {
         list: parsed.list || null,
         // 없으면 켜진 것으로 읽는다 — 이 필드가 생기기 전의 state.json 이
         // 업데이트 한 번에 시작 프로그램에서 빠지면 안 된다.
-        autoLaunch: parsed.autoLaunch !== false
+        autoLaunch: parsed.autoLaunch !== false,
+        // 설치 관리자를 띄우기 직전에 적어 두는 { version, installer } 한 쌍.
+        // **이 앱에서 유일하게 "다음 실행의 나"에게 남기는 쪽지다.** 조용한
+        // 설치(/S)는 실패해도 아무 말이 없으므로, 다음에 뜬 내가 이 쪽지와
+        // 자기 빌드 스탬프를 견주는 것 말고는 실패를 알아챌 방법이 없다.
+        // main.js 가 읽는 즉시 지우므로 정상 경로에서는 오래 남지 않는다.
+        pendingUpdate: parsed.pendingUpdate || null
       }
     } catch (err) {
       // 파일이 아예 없는 것(ENOENT)은 첫 실행이므로 조용히 넘어간다.
@@ -82,7 +88,7 @@ class Store {
       if (err.code !== 'ENOENT') {
         console.warn(`상태 파일을 읽지 못했다 (${err.code}): ${this.filePath}`)
       }
-      this.data = { notes: {}, email: null, fonts: null, list: null, autoLaunch: true }
+      this.data = { notes: {}, email: null, fonts: null, list: null, autoLaunch: true, pendingUpdate: null }
     }
     return this.data
   }

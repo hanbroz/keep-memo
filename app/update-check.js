@@ -151,11 +151,36 @@ function decideUpdate (currentStamp, release) {
   return { action: 'update', version: latestText, name: asset.name, url: asset.url, size: asset.size }
 }
 
+/**
+ * 지난 실행에서 설치를 시도한 버전이 정말 적용됐는지 판단한다.
+ *
+ * **이 판단이 없으면 실패가 영원히 보이지 않는다.** 설치 관리자를 조용히(/S)
+ * 띄우는 이상, 그것이 아무것도 하지 않고 물러나도 앱은 알 길이 없다 — 다시 뜬
+ * 앱은 옛 빌드 그대로이고, 4시간 뒤 주기 확인이 같은 릴리즈를 또 찾아내 같은
+ * 것을 또 묻는다. 사용자 눈에는 "업데이트를 눌렀는데 계속 이전 버전"인 무한
+ * 반복이고, 어디가 잘못됐는지 말해 주는 것이 하나도 없다.
+ *
+ * '>=' 인 것이 중요하다. 시도한 것보다 **더 새로운** 빌드가 깔려 있는 경우
+ * (사용자가 그 사이에 더 최신 설치본을 직접 실행한 경우)도 성공이다.
+ *
+ * @param {unknown} currentStamp - 지금 실행 중인 빌드의 "yyyy.MM.dd.HH.mm"
+ * @param {unknown} attemptedVersion - 지난 실행에서 설치하려던 버전
+ * @returns {'applied' | 'failed' | 'unknown'} 어느 쪽도 읽지 못하면 'unknown'
+ *   (개발 실행이거나 state.json 이 손상된 경우다 — 그때 실패라고 우기면 안 된다)
+ */
+function decideUpdateOutcome (currentStamp, attemptedVersion) {
+  const current = parseBuildStamp(currentStamp)
+  const attempted = parseBuildStamp(attemptedVersion)
+  if (current === null || attempted === null) return 'unknown'
+  return compareBuildStamps(current, attempted) >= 0 ? 'applied' : 'failed'
+}
+
 module.exports = {
   parseBuildStamp,
   compareBuildStamps,
   stampFromTag,
   pickInstallerAsset,
   decideUpdate,
+  decideUpdateOutcome,
   STAMP_PARTS
 }

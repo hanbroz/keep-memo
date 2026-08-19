@@ -2,7 +2,8 @@
 const test = require('node:test')
 const assert = require('node:assert')
 const {
-  parseBuildStamp, compareBuildStamps, stampFromTag, pickInstallerAsset, decideUpdate
+  parseBuildStamp, compareBuildStamps, stampFromTag, pickInstallerAsset, decideUpdate,
+  decideUpdateOutcome
 } = require('../update-check')
 
 // 이 파일이 지키는 것: "새 버전이 있는가"를 조용히 틀리지 않는 것. 틀리는 방향이
@@ -170,6 +171,38 @@ test('릴리즈가 통째로 이상해도 던지지 않는다', () => {
     const res = decideUpdate('2026.08.05.10.19', bad)
     assert.strictEqual(res.action, 'none', JSON.stringify(bad))
     assert.ok(res.reason.length > 0, '이유는 항상 있어야 한다')
+  }
+})
+
+// --- 설치가 정말 적용됐는가 ---------------------------------------------------
+//
+// 이 판단이 틀리면 두 방향 다 나쁘다. 성공을 실패라 하면 잘 깔린 사용자에게
+// 매번 "설치되지 않았습니다"를 띄우고, 실패를 성공이라 하면 이 함수가 막으려던
+// 무한 반복(옛 빌드로 다시 떠서 4시간마다 같은 것을 또 묻는)이 그대로 돌아온다.
+
+test('시도한 버전이 됐으면 적용된 것이다', () => {
+  assert.strictEqual(decideUpdateOutcome('2026.08.18.11.47', '2026.08.18.11.47'), 'applied')
+})
+
+test('시도한 것보다 더 새것이 깔려 있어도 적용된 것이다', () => {
+  // 사용자가 그 사이 더 최신 설치본을 직접 실행한 경우다. 실패가 아니다.
+  assert.strictEqual(decideUpdateOutcome('2026.08.20.09.00', '2026.08.18.11.47'), 'applied')
+})
+
+test('여전히 옛 버전이면 실패다 — 이것이 사용자가 겪은 그 증상이다', () => {
+  assert.strictEqual(decideUpdateOutcome('2026.08.11.14.14', '2026.08.18.11.47'), 'failed')
+})
+
+test('분 단위 한 칸 차이도 놓치지 않는다', () => {
+  assert.strictEqual(decideUpdateOutcome('2026.08.18.11.46', '2026.08.18.11.47'), 'failed')
+})
+
+test('어느 쪽이든 읽지 못하면 실패라고 우기지 않는다', () => {
+  // 개발 실행(스탬프 없음)과 손상된 state.json 이 여기로 온다. 모를 때 실패라
+  // 하면 아무 잘못 없는 사용자에게 경고 창이 뜬다 — 모르면 가만히 있는다.
+  for (const bad of [null, undefined, '', 'dev', 42, {}]) {
+    assert.strictEqual(decideUpdateOutcome(bad, '2026.08.18.11.47'), 'unknown', JSON.stringify(bad))
+    assert.strictEqual(decideUpdateOutcome('2026.08.18.11.47', bad), 'unknown', JSON.stringify(bad))
   }
 })
 

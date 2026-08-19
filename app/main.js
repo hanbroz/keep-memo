@@ -26,7 +26,7 @@ const { validateNotePatch, validateChecklistPatch } = require('./note-patch')
 // 검사가 아니다. shell.openExternal() 은 문자열을 그대로 운영체제에 넘기고, 그
 // 문자열의 출처는 Keep 이라는 외부 데이터다.
 const { sanitizeUrl, keepListUrl } = require('./renderer/url-open')
-const { decideUpdate } = require('./update-check')
+const { decideUpdate, decideUpdateOutcome } = require('./update-check')
 // 재부팅 뒤에도 이 앱이 트레이에 있어야 메모 앱 노릇을 한다. 무엇을 시작
 // 프로그램으로 걸지(그리고 개발 실행에서는 아예 걸지 않을지)는 저 순수 함수가
 // 정한다 — 무엇을 걸어야 하고 왜 그런지가 그 파일 주석에 있다.
@@ -1143,6 +1143,26 @@ function notifyNotesChanged () {
 // 이다. 즉 /S 만 주면 조용히 설치만 하고 앱은 영영 안 돌아온다 — 사용자 눈에는
 // "업데이트를 눌렀더니 앱이 사라졌다"가 된다. --force-run 이 그것을 막는다.
 //
+// **`--updated` 가 세 번째로 필요하다.** app-builder-lib 의
+// templates/nsis/include/allowOnlyOneInstallerInstance.nsh 의 _CHECK_APP_RUNNING
+// 을 보면, 설치 관리자는 시작하자마자 "Keep Sticky.exe 가 아직 도는가"를 본다.
+// 그런데 app.relaunch 는 설치 관리자를 **relauncher 도우미 프로세스**로 띄우고
+// (Windows 에서 그 도우미는 다름 아닌 Keep Sticky.exe 자신이다), 방금 종료한
+// GPU·utility 자식들도 몇백 ms 는 더 살아 있다. 즉 설치 관리자가 우리를
+// 발견하는 것은 우연이 아니라 정상이다. 그때:
+//
+//   - --updated 가 있으면: Sleep 300 → 다시 확인 → Sleep 1000 → 곧장 taskkill.
+//     "앱이 스스로 끝나는 중"으로 보고 기다려 준다.
+//   - --updated 가 없으면: 위 두 번의 유예가 통째로 빠지고, 재시도 루프가
+//     두 바퀴 안에 끝나지 않으면 `MessageBox MB_RETRYCANCEL /SD IDCANCEL` →
+//     **Quit**. 무인 모드의 기본 답이 [취소]라 아무것도 설치하지 않고, 아무
+//     말도 없이, 오류 코드조차 남기지 않고 물러난다.
+//
+// 그 조용한 후퇴가 "업데이트를 눌러도 계속 이전 버전"의 정체다. 옛 빌드가 그대로
+// 다시 뜨고, 4시간 뒤 주기 확인이 같은 릴리즈를 또 찾아내 같은 것을 또 묻는다.
+// 그래서 --updated 로 유예를 얻고, 그래도 실패할 수 있으므로 시도한 버전을
+// 적어 뒀다가 다음 실행에서 대조한다(startupUpdateReport).
+//
 // electron-updater 를 붙이지 않는 이유: 이미 있는 조각(update-check.js 의
 // decideUpdate 와 그 테스트)으로 충분하고, 그것을 쓰려면 latest.yml 발행과
 // 의존성이 하나 더 늘어난다. 여기서 하는 일은 릴리즈 조회, 내려받기, 설치본
@@ -1322,8 +1342,58 @@ async function runUpdateCheck ({ silent }) {
   // 프로세스가 **완전히 끝난 뒤에** 대상을 실행한다. 설치 관리자를 먼저 띄워
   // 두면 그것이 파일을 갈아엎는 동안 우리는 아직 미저장 편집을 저장하는 중일
   // 수 있고, 설치 관리자는 실행 중인 앱을 닫으려 든다 — 저장 도중에 죽는다.
-  app.relaunch({ execPath: installer, args: ['/S', '--force-run'] })
+  //
+  // 무엇을 설치하려 했는지 **먼저 적어 둔다.** 이 줄 다음부터 이 프로세스는
+  // 죽는 일만 남았고, 설치가 실패해도 그 사실을 알 수 있는 것은 다음에 뜨는
+  // 나뿐이다(startupUpdateReport 가 이 쪽지를 읽는다).
+  store.data.pendingUpdate = { version: decision.version, installer }
+  store.save()
+  app.relaunch({ execPath: installer, args: ['/S', '--force-run', '--updated'] })
   app.quit()
+}
+
+/**
+ * 지난 실행에서 설치를 시도했는데 그 버전이 되지 못했으면 사용자에게 말한다.
+ * 시작할 때 딱 한 번, 주기 확인보다 **먼저** 부른다.
+ *
+ * 이것이 없으면 조용한 설치 실패는 무한 반복이 된다: 옛 빌드로 다시 떠서,
+ * 4시간마다 같은 릴리즈를 찾아, 같은 것을 또 묻는다. 사용자에게는 "눌러도
+ * 소용없는 업데이트 창"만 남고 왜 그런지 알려 주는 것은 아무 데도 없다.
+ *
+ * 실패를 알린 뒤에는 그 버전을 declinedUpdateVersion 에 넣어 이번 세션의 주기
+ * 확인이 다시 묻지 않게 한다 — 방금 그 이야기를 했는데 몇 시간 뒤 같은 창을
+ * 또 띄우면 안내가 아니라 잔소리다. 트레이의 [업데이트 확인] 은 사용자가 방금
+ * 요청한 것이므로 이 기억을 무시하고 언제든 다시 시도할 수 있다.
+ */
+function startupUpdateReport () {
+  const pending = store.data.pendingUpdate
+  if (!pending) return
+  // 읽었으면 지운다. 여기서 지우지 않으면 이 쪽지 하나 때문에 실패 안내가
+  // 매번 뜨는, 고치려던 것과 똑같은 모양의 반복이 생긴다.
+  store.data.pendingUpdate = null
+  store.save()
+
+  const stamp = currentBuildStamp()
+  if (decideUpdateOutcome(stamp, pending.version) !== 'failed') return
+
+  declinedUpdateVersion = pending.version
+  const installer = typeof pending.installer === 'string' && fs.existsSync(pending.installer)
+    ? pending.installer
+    : null
+  dialog.showMessageBox({
+    type: 'warning',
+    buttons: installer ? ['설치 파일 열기', '닫기'] : ['닫기'],
+    defaultId: 0,
+    cancelId: installer ? 1 : 0,
+    message: `업데이트 ver. ${pending.version} 가 설치되지 않았습니다.`,
+    detail: `지금 버전: ${stamp}\n\n` +
+      '설치 관리자가 앱이 아직 떠 있다고 보고 아무것도 하지 않은 채 물러난 것으로 보입니다.\n' +
+      (installer
+        ? '[설치 파일 열기] 를 누른 뒤, 트레이 아이콘에서 [종료] 로 앱을 완전히 끄고 그 파일을 실행해 주세요.'
+        : '받아 둔 설치 파일이 남아 있지 않습니다. 트레이의 [업데이트 확인] 으로 다시 시도해 주세요.')
+  }).then((res) => {
+    if (installer && res.response === 0) shell.showItemInFolder(installer)
+  }).catch(() => {})
 }
 
 /**
@@ -1836,6 +1906,12 @@ app.whenReady().then(async () => {
   // 지난 세션에 띄워둔 포스트잇을 위치까지 복원한다.
   for (const id of store.visibleIds()) createNoteWindow(id)
   createListWindow()
+
+  // 지난번에 시도한 설치가 적용됐는지 먼저 따진다. 아래의 조용한 확인보다
+  // **앞이어야 한다** — 실패했다면 그 버전을 declinedUpdateVersion 에 넣어야
+  // 하고, 그 기억은 checkForUpdate 가 읽기 전에 자리를 잡아야 한다. 순서가
+  // 뒤집히면 실패 안내와 "새 버전이 있습니다" 창이 나란히 뜬다.
+  startupUpdateReport()
 
   // 시작하고 나서 조용히 한 번 확인한다. 목록 창이 뜬 **뒤**라 앱을 켜는 속도를
   // 늦추지 않고, 새 버전이 없으면 아무 말도 하지 않는다. 실패(네트워크 없음 등)도
