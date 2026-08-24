@@ -143,6 +143,14 @@ const FLUSH_ON_CLOSE_MS = 3000
 // 펼친 직후, OS 가 뒤늦게 보내는 moved/resized 이벤트가 다 지나갈 때까지
 // 기다리는 시간. 이 창이 왜 필요한지는 boundsFrozen 주석에 있다.
 const UNFOLD_SETTLE_MS = 400
+// 죽은 렌더러를 되살린 뒤, "이 되살리기는 성공했다"고 볼 때까지의 시간.
+// 이 시간을 버티면 다음 죽음도 다시 되살린다. 그 안에 또 죽으면 원인이
+// 그대로라는 뜻이라 멈춘다(createNoteWindow 의 render-process-gone 주석 참고).
+//
+// 30초인 이유: 페이지를 다시 그리는 데 걸리는 시간(1초 안쪽)보다 넉넉히 크고,
+// 몇 시간 뒤에 오는 다음 죽음과는 비교도 안 될 만큼 짧다. 그 사이의 값이면
+// 무엇이든 같은 답을 낸다.
+const REVIVE_SETTLE_MS = 30 * 1000
 
 let sidecar = null
 let store = null
@@ -837,12 +845,29 @@ function createNoteWindow (noteId) {
   // 껐다 켜는 우회뿐이다. 한 번은 스스로 되살린다. 되살아나면 아래
   // did-finish-load 가 접힘 상태를 다시 보내므로 책갈피 글자까지 그대로 돌아온다.
   //
-  // 한 번뿐인 이유: 죽는 원인이 그대로면 다시 죽고, 그러면 되살리기가 무한
-  // 반복이 된다. 두 번째부터는 그냥 둔다 — 사용자의 우회 경로는 남아 있다.
-  let renderRevived = false
-  win.webContents.on('render-process-gone', () => {
-    if (renderRevived || win.isDestroyed()) return
-    renderRevived = true
+  // **되살리기를 "평생 한 번"으로 묶었던 것이 이 버그가 두 번 온 이유다.**
+  // 무한 반복을 막으려던 그 상한은 맞는 걱정에서 나왔지만 세는 단위가 틀렸다.
+  // 이 앱은 트레이에 며칠씩 사는 상주 앱이고, 렌더러는 크래시 말고도 죽는다 —
+  // 윈도우가 메모리 압박에 뒤에 있는 렌더러를 거둬 가는 것이 그렇다. 그렇게
+  // 한 번 되살아난 창은 그 뒤로 무방비가 되어, 몇 시간 뒤 다음 죽음에서 다시
+  // 흰 띠로 굳는다. 되살리기 횟수가 쌓이는 것은 정상이고, 위험한 것은 횟수가
+  // 아니라 **간격**이다.
+  //
+  // 그래서 "평생 한 번"을 "연달아 죽지 않는 한 계속"으로 바꾼다. 되살린 창이
+  // REVIVE_SETTLE_MS 를 버텼으면 그 죽음은 일회성이었다는 뜻이므로 다음 기회를
+  // 돌려준다. 그 안에 또 죽으면 원인이 그대로라는 뜻이라 멈춘다 — 여기서
+  // 멈추지 않으면 되살리기가 CPU 를 태우는 무한 반복이 된다.
+  //
+  // lastRevivedAt 이 0 이면 아직 한 번도 안 되살린 것이고, Date.now() - 0 은
+  // 언제나 REVIVE_SETTLE_MS 보다 크므로 첫 죽음은 무조건 되살린다.
+  let lastRevivedAt = 0
+  win.webContents.on('render-process-gone', (_event, details) => {
+    if (win.isDestroyed()) return
+    if (Date.now() - lastRevivedAt < REVIVE_SETTLE_MS) {
+      noticeStuckNote(noteId, details)
+      return
+    }
+    lastRevivedAt = Date.now()
     win.webContents.reload()
   })
 
@@ -927,6 +952,32 @@ function sendFoldState (noteId) {
 
 function isFolded (noteId) {
   return foldOrder.some((e) => e.id === noteId)
+}
+
+/**
+ * 되살리기를 포기한 창이 있다고 알린다.
+ *
+ * **접혀 있을 때만 말한다.** 펼친 포스트잇이 흰 창이 되면 눈에 띄고 ✕ 로 닫을
+ * 수도 있어서 사용자가 스스로 빠져나올 수 있다. 접힌 책갈피는 그렇지 않다 —
+ * 44px 손잡이라 눌러도 아무 일이 없고, 닫을 단추도 그 안에 있어서 함께
+ * 사라진다. 아무 말도 없이 두면 사용자에게 남는 것은 정체를 알 수 없는 흰 띠
+ * 하나뿐이고, 그것이 이 앱에서 가장 나쁜 응답이다.
+ *
+ * 어느 메모인지는 이 프로세스가 모른다 — 제목은 죽은 렌더러 안에 있었고
+ * state.json 은 좌표만 들고 있다. 그래서 문구는 "어느 것"이 아니라 "무엇을
+ * 하면 되는지"를 말한다.
+ */
+function noticeStuckNote (noteId, details) {
+  const reason = (details && details.reason) || '알 수 없음'
+  console.warn(`메모 ${noteId} 의 렌더러가 되살린 직후 다시 죽었다 (${reason}) — 되살리기를 멈춘다`)
+  if (!isFolded(noteId)) return
+  dialog.showMessageBox({
+    type: 'warning',
+    message: '접힌 메모 하나가 응답하지 않습니다.',
+    detail: '글자 없는 흰 띠로 남은 책갈피가 있다면 그것입니다. 눌러도 열리지 않습니다.\n\n' +
+            '목록 창에서 그 메모의 체크를 껐다가 다시 켜면 새로 만들어집니다.\n' +
+            '메모 내용은 Keep 에 그대로 있으므로 사라지지 않습니다.'
+  }).catch(() => {})
 }
 
 function forgetFold (noteId) {
