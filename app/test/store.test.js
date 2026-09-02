@@ -379,3 +379,60 @@ test('list 키가 없는 옛 state.json 도 그대로 읽힌다', () => {
   assert.strictEqual(s.getEmail(), 'old@x.com')
   assert.deepStrictEqual(s.getFontSettings(), DEFAULT_FONT_SETTINGS)
 })
+
+// --- 업데이트 쪽지 -----------------------------------------------------------
+//
+// pendingUpdate 는 **프로세스의 죽음을 건너 살아남는 것이 존재 이유의 전부**인
+// 필드다. 설치 관리자를 띄우기 직전에 적고, 다음에 뜬 인스턴스가 그것을 읽어
+// 설치가 정말 됐는지 판정한다(main.js 의 startupUpdateReport). 왕복이 깨지면
+// 조용한 설치 실패가 다시 보이지 않게 되므로, 그 왕복만큼은 검사가 있어야 한다.
+
+test('업데이트 쪽지는 저장한 뒤 다시 읽어도 그대로다', () => {
+  const file = tmpFile()
+  const a = new Store(file)
+  a.load()
+  a.data.pendingUpdate = { version: '2026.08.18.11.47', installer: 'C:\\Temp\\KeepSticky-Setup.exe' }
+  a.save()
+
+  const b = new Store(file)
+  b.load()
+  assert.deepStrictEqual(b.data.pendingUpdate, {
+    version: '2026.08.18.11.47',
+    installer: 'C:\\Temp\\KeepSticky-Setup.exe'
+  })
+})
+
+test('이 필드가 없던 옛 state.json 을 읽으면 쪽지는 null 이다', () => {
+  // 업데이트 한 번에 옛 상태 파일이 못 읽히는 파일이 되면 안 된다.
+  const file = tmpFile()
+  fs.writeFileSync(file, JSON.stringify({ notes: {}, email: 'a@b.com' }), 'utf8')
+  const s = new Store(file)
+  s.load()
+  assert.strictEqual(s.data.pendingUpdate, null)
+  assert.strictEqual(s.data.email, 'a@b.com')
+})
+
+test('손상된 JSON 폴백에도 쪽지 자리가 있다', () => {
+  // 폴백이 이 필드를 빠뜨리면 startupUpdateReport 가 undefined 를 읽는다.
+  const file = tmpFile()
+  fs.writeFileSync(file, '{ 이건 JSON 이 아니다', 'utf8')
+  const s = new Store(file)
+  s.load()
+  assert.strictEqual(s.data.pendingUpdate, null)
+})
+
+test('쪽지를 지우고 저장하면 지워진 채로 남는다', () => {
+  // forgetPendingUpdate 가 기대는 왕복이다. 지웠는데 되살아나면 실패 안내가
+  // 매번 뜨는, 고치려던 것과 똑같은 모양의 반복이 된다.
+  const file = tmpFile()
+  const a = new Store(file)
+  a.load()
+  a.data.pendingUpdate = { version: '2026.08.18.11.47', installer: 'x.exe' }
+  a.save()
+  a.data.pendingUpdate = null
+  a.save()
+
+  const b = new Store(file)
+  b.load()
+  assert.strictEqual(b.data.pendingUpdate, null)
+})

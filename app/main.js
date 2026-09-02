@@ -143,14 +143,21 @@ const FLUSH_ON_CLOSE_MS = 3000
 // 펼친 직후, OS 가 뒤늦게 보내는 moved/resized 이벤트가 다 지나갈 때까지
 // 기다리는 시간. 이 창이 왜 필요한지는 boundsFrozen 주석에 있다.
 const UNFOLD_SETTLE_MS = 400
-// 죽은 렌더러를 되살린 뒤, "이 되살리기는 성공했다"고 볼 때까지의 시간.
-// 이 시간을 버티면 다음 죽음도 다시 되살린다. 그 안에 또 죽으면 원인이
-// 그대로라는 뜻이라 멈춘다(createNoteWindow 의 render-process-gone 주석 참고).
+// 죽은 렌더러를 한 시간 안에 몇 번까지 되살릴 것인가.
 //
-// 30초인 이유: 페이지를 다시 그리는 데 걸리는 시간(1초 안쪽)보다 넉넉히 크고,
-// 몇 시간 뒤에 오는 다음 죽음과는 비교도 안 될 만큼 짧다. 그 사이의 값이면
-// 무엇이든 같은 답을 낸다.
-const REVIVE_SETTLE_MS = 30 * 1000
+// **간격이 아니라 창(window)당 횟수로 세는 이유.** "되살린 뒤 30초 안에 또
+// 죽으면 멈춘다" 같은 간격 규칙은 속도 제한일 뿐 상한이 아니다. 메모리 압박이
+// 몇 시간 이어져 40초마다 렌더러가 거둬 가지면 그 간격은 매번 문턱을 넘으므로
+// 영원히 되살아나고, 앱은 자기를 죽이는 압박에 계속 연료를 부으면서 사용자에게
+// 끝내 아무 말도 하지 않는다. 세어야 하는 것은 "지금 죽음이 직전 죽음과 얼마나
+// 붙어 있나"가 아니라 "요즘 이 창이 얼마나 자주 죽나"다.
+//
+// 이 규칙은 두 극단을 다 담는다: 빠른 크래시 루프는 다섯 번을 몇 초 만에 태우고
+// 멈추고(재적재 다섯 번은 무시할 만한 비용이다), 하루에 한 번 죽는 창은 창이
+// 언제나 비어 있어 몇 년이든 되살아난다 — 옛 "평생 한 번"이 막지 못한 바로 그
+// 정상 사용이다.
+const REVIVE_WINDOW_MS = 60 * 60 * 1000
+const REVIVE_MAX_IN_WINDOW = 5
 
 let sidecar = null
 let store = null
@@ -346,10 +353,12 @@ function flushAllNotes () {
  * ensureAuth 실패는 '인증 실패 → 종료'로 끝나고, 다시 켜도 막힌 그 창을 다시
  * 띄울 뿐이라 "인증 실패 → 종료"가 영원히 반복된다.
  *
- * 교환 실패를 여기서 잡는 것이 중요하다. 예전에는 그대로 던졌는데, 시작 경로의
- * ensureAuth() 에는 이것을 받는 곳이 없어서(app.whenReady().then() 에 .catch 가
- * 없다) 처리되지 않은 거절이 되고, 앱은 트레이 아이콘과 사이드카만 남긴 채 창
- * 하나 없이 멈춰 있었다 — 이 파일이 곳곳에서 막으려는 그 유령 상태다.
+ * 교환 실패를 여기서 잡는 것이 중요하다. 예전에는 그대로 던졌는데, 그때는
+ * app.whenReady().then() 에 .catch 가 없어 처리되지 않은 거절이 됐고, 앱은
+ * 트레이 아이콘과 사이드카만 남긴 채 창 하나 없이 멈춰 있었다 — 이 파일이
+ * 곳곳에서 막으려는 그 유령 상태다. 지금은 그 바깥쪽에 .catch 가 있어 무한정
+ * 멈추지는 않지만, 거기서는 여기 있는 수동 붙여넣기 폴백 없이 그냥 종료된다.
+ * 그 폴백 UX 를 살리려면 여전히 여기서 먼저 잡아야 한다.
  *
  * @returns {Promise<boolean>} 새 토큰을 받아 저장했는가.
  */
@@ -850,24 +859,27 @@ function createNoteWindow (noteId) {
   // 이 앱은 트레이에 며칠씩 사는 상주 앱이고, 렌더러는 크래시 말고도 죽는다 —
   // 윈도우가 메모리 압박에 뒤에 있는 렌더러를 거둬 가는 것이 그렇다. 그렇게
   // 한 번 되살아난 창은 그 뒤로 무방비가 되어, 몇 시간 뒤 다음 죽음에서 다시
-  // 흰 띠로 굳는다. 되살리기 횟수가 쌓이는 것은 정상이고, 위험한 것은 횟수가
-  // 아니라 **간격**이다.
+  // 흰 띠로 굳는다. 되살리기가 쌓이는 것은 정상이다.
   //
-  // 그래서 "평생 한 번"을 "연달아 죽지 않는 한 계속"으로 바꾼다. 되살린 창이
-  // REVIVE_SETTLE_MS 를 버텼으면 그 죽음은 일회성이었다는 뜻이므로 다음 기회를
-  // 돌려준다. 그 안에 또 죽으면 원인이 그대로라는 뜻이라 멈춘다 — 여기서
-  // 멈추지 않으면 되살리기가 CPU 를 태우는 무한 반복이 된다.
+  // 그래서 상한을 "한 시간에 REVIVE_MAX_IN_WINDOW 번"으로 둔다. 왜 간격이
+  // 아니라 빈도인지는 그 상수의 주석에 있다.
   //
-  // lastRevivedAt 이 0 이면 아직 한 번도 안 되살린 것이고, Date.now() - 0 은
-  // 언제나 REVIVE_SETTLE_MS 보다 크므로 첫 죽음은 무조건 되살린다.
-  let lastRevivedAt = 0
+  // **단조 시계(performance.now)를 쓴다.** Date.now() 는 벽시계라 NTP 보정이나
+  // 절전 복귀에 뒤로 갈 수 있고, 그러면 뺄셈이 음수가 되어 "방금 되살렸다"로
+  // 오판한다 — 되살릴 수 있는 창을 되살리지 않고 흰 띠로 굳히는 쪽으로 틀린다.
+  let reviveTimes = []
   win.webContents.on('render-process-gone', (_event, details) => {
-    if (win.isDestroyed()) return
-    if (Date.now() - lastRevivedAt < REVIVE_SETTLE_MS) {
+    // 종료 절차가 시작됐으면 손대지 않는다. 닫는 중인 창의 렌더러를 다시
+    // 띄우는 것은 낭비이고, 그 와중에 뜨는 경고 창은 안내가 아니라 종료를
+    // 가로막는 방해물이다.
+    if (quitTeardownStarted || win.isDestroyed()) return
+    const now = performance.now()
+    reviveTimes = reviveTimes.filter((t) => now - t < REVIVE_WINDOW_MS)
+    if (reviveTimes.length >= REVIVE_MAX_IN_WINDOW) {
       noticeStuckNote(noteId, details)
       return
     }
-    lastRevivedAt = Date.now()
+    reviveTimes.push(now)
     win.webContents.reload()
   })
 
@@ -954,30 +966,47 @@ function isFolded (noteId) {
   return foldOrder.some((e) => e.id === noteId)
 }
 
+// 지금 떠 있는 "응답하지 않는 메모" 안내. 없으면 null.
+//
+// **이것이 없으면 창이 쌓인다.** 이 안내를 부르는 원인(윈도우의 메모리 회수)은
+// 본질적으로 모든 렌더러에 동시에 걸린다 — 즉 여러 창이 함께 죽는 것은 예외가
+// 아니라 이 기능이 상정한 정상적인 모양이다. 창마다 한 장씩 띄우면 똑같은
+// 문구가 다섯 장 겹치고, 문구는 어차피 어느 메모인지 말하지 못하므로 두
+// 번째부터는 안내가 아니라 치워야 할 일감일 뿐이다. updateCheckInFlight 가
+// 업데이트 창에 대해 막은 것과 같은 문제다("아침에 열 장" 주석 참고).
+let stuckNoticeInFlight = null
+
 /**
  * 되살리기를 포기한 창이 있다고 알린다.
  *
- * **접혀 있을 때만 말한다.** 펼친 포스트잇이 흰 창이 되면 눈에 띄고 ✕ 로 닫을
- * 수도 있어서 사용자가 스스로 빠져나올 수 있다. 접힌 책갈피는 그렇지 않다 —
- * 44px 손잡이라 눌러도 아무 일이 없고, 닫을 단추도 그 안에 있어서 함께
- * 사라진다. 아무 말도 없이 두면 사용자에게 남는 것은 정체를 알 수 없는 흰 띠
- * 하나뿐이고, 그것이 이 앱에서 가장 나쁜 응답이다.
+ * **접혔든 펼쳤든 똑같이 말한다.** 예전 주석은 "펼친 포스트잇은 ✕ 로 닫을 수
+ * 있으니 말할 필요 없다"고 했는데 사실이 아니었다 — 그 ✕ 는 렌더러가 그리는
+ * HTML(renderer/note.html)이라 렌더러와 함께 죽는다. 게다가 포스트잇 창은
+ * frame:false 라 OS 제목 줄도 닫기 단추도 없고, skipTaskbar:true 라 작업
+ * 표시줄로도 닿지 않으며, 기본값이 alwaysOnTop 이다. 죽은 펼침 창은 **다른 모든
+ * 창 위에 뜬, 손댈 수 없는 450x380 흰 사각형**이라 44px 책갈피보다 오히려
+ * 나쁘다. 둘 다 사용자가 스스로 빠져나올 수 없다는 점에서 같다.
  *
  * 어느 메모인지는 이 프로세스가 모른다 — 제목은 죽은 렌더러 안에 있었고
  * state.json 은 좌표만 들고 있다. 그래서 문구는 "어느 것"이 아니라 "무엇을
- * 하면 되는지"를 말한다.
+ * 하면 되는지"를 말한다. 죽은 원인(details.reason)은 문구에 실어 보낸다.
+ * console.warn 은 패키징본에 콘솔이 없어 아무 데도 닿지 않으므로, 사용자가
+ * 화면을 찍어 보낼 때 그 값이 함께 오게 하는 것이 유일하게 남는 길이다.
  */
 function noticeStuckNote (noteId, details) {
   const reason = (details && details.reason) || '알 수 없음'
-  console.warn(`메모 ${noteId} 의 렌더러가 되살린 직후 다시 죽었다 (${reason}) — 되살리기를 멈춘다`)
-  if (!isFolded(noteId)) return
-  dialog.showMessageBox({
+  console.warn(`메모 ${noteId} 의 렌더러가 되풀이해 죽는다 (${reason}) — 되살리기를 멈춘다`)
+  if (stuckNoticeInFlight) return
+  stuckNoticeInFlight = dialog.showMessageBox({
     type: 'warning',
-    message: '접힌 메모 하나가 응답하지 않습니다.',
-    detail: '글자 없는 흰 띠로 남은 책갈피가 있다면 그것입니다. 눌러도 열리지 않습니다.\n\n' +
+    message: '메모 하나가 응답하지 않습니다.',
+    detail: '글자 없이 흰 사각형이나 흰 띠로 남은 메모가 있다면 그것입니다.\n' +
+            '눌러도 반응하지 않고, 닫기 단추도 함께 사라져 직접 닫을 수 없습니다.\n\n' +
             '목록 창에서 그 메모의 체크를 껐다가 다시 켜면 새로 만들어집니다.\n' +
-            '메모 내용은 Keep 에 그대로 있으므로 사라지지 않습니다.'
-  }).catch(() => {})
+            '메모 내용은 Keep 에 그대로 있으므로 사라지지 않습니다.\n\n' +
+            `(원인: ${reason})`
+  }).catch((err) => { console.warn(`안내 창을 띄우지 못했다: ${err.message}`) })
+    .finally(() => { stuckNoticeInFlight = null })
 }
 
 function forgetFold (noteId) {
@@ -1202,17 +1231,25 @@ function notifyNotesChanged () {
 // GPU·utility 자식들도 몇백 ms 는 더 살아 있다. 즉 설치 관리자가 우리를
 // 발견하는 것은 우연이 아니라 정상이다. 그때:
 //
-//   - --updated 가 있으면: Sleep 300 → 다시 확인 → Sleep 1000 → 곧장 taskkill.
-//     "앱이 스스로 끝나는 중"으로 보고 기다려 준다.
-//   - --updated 가 없으면: 위 두 번의 유예가 통째로 빠지고, 재시도 루프가
-//     두 바퀴 안에 끝나지 않으면 `MessageBox MB_RETRYCANCEL /SD IDCANCEL` →
-//     **Quit**. 무인 모드의 기본 답이 [취소]라 아무것도 설치하지 않고, 아무
-//     말도 없이, 오류 코드조차 남기지 않고 물러난다.
+//   - --updated 가 있으면: `Sleep 300` 뒤에 프로세스를 찾고, 그래도 있으면
+//     `Sleep 1000` 뒤 곧장 taskkill 로 간다. "앱이 스스로 끝나는 중"으로 보고
+//     **1.3초를 기다려 준다.**
+//   - --updated 가 없으면: 그 1.3초가 통째로 빠진다.
+//
+// **--updated 가 사는 것은 딱 그 1.3초뿐이다.** 그 뒤의 taskkill, 재시도 루프,
+// 그리고 두 바퀴째에 걸리는 `MessageBox MB_RETRYCANCEL /SD IDCANCEL` → **Quit**
+// 은 전부 `${if} ${isUpdated}` **바깥**이라 어느 쪽이든 똑같이 실행된다. 즉
+// 무인 모드의 기본 답이 [취소]라 아무것도 설치하지 않고, 아무 말도 없이,
+// 오류 코드조차 남기지 않고 물러나는 그 경로는 --updated 를 줘도 여전히 열려
+// 있다. (`/S` 만으로도 첫 대화상자 `MB_OKCANCEL /SD IDOK` 은 자동으로 [확인]이
+// 되므로, 거기서 물러나는 것은 애초에 아니었다.)
 //
 // 그 조용한 후퇴가 "업데이트를 눌러도 계속 이전 버전"의 정체다. 옛 빌드가 그대로
 // 다시 뜨고, 4시간 뒤 주기 확인이 같은 릴리즈를 또 찾아내 같은 것을 또 묻는다.
-// 그래서 --updated 로 유예를 얻고, 그래도 실패할 수 있으므로 시도한 버전을
-// 적어 뒀다가 다음 실행에서 대조한다(startupUpdateReport).
+// --updated 는 그 확률을 낮출 뿐 없애지 못한다. **진짜 안전망은 두 번째다** —
+// 시도한 버전을 적어 뒀다가 다음 실행에서 자기 스탬프와 대조하는 것
+// (startupUpdateReport). 설치가 조용히 실패해도 그 침묵이 사용자에게까지
+// 이어지지는 않게 하는 것이 이 쪽이고, 이것이 없으면 무한 반복은 그대로다.
 //
 // electron-updater 를 붙이지 않는 이유: 이미 있는 조각(update-check.js 의
 // decideUpdate 와 그 테스트)으로 충분하고, 그것을 쓰려면 latest.yml 발행과
@@ -1397,8 +1434,19 @@ async function runUpdateCheck ({ silent }) {
   // 무엇을 설치하려 했는지 **먼저 적어 둔다.** 이 줄 다음부터 이 프로세스는
   // 죽는 일만 남았고, 설치가 실패해도 그 사실을 알 수 있는 것은 다음에 뜨는
   // 나뿐이다(startupUpdateReport 가 이 쪽지를 읽는다).
-  store.data.pendingUpdate = { version: decision.version, installer }
-  store.save()
+  //
+  // **쪽지를 못 남겨도 설치는 간다.** Store.save() 는 try/catch 없는 동기 파일
+  // 쓰기 셋이라 던질 수 있다(백신이 잡고 있는 .tmp, 가득 찬 디스크, 읽기 전용
+  // 프로필). 그것을 그냥 두면 예외가 아래 두 줄을 건너뛰고 올라가는데, 이 함수를
+  // 부르는 세 곳이 전부 빈 catch 라 사용자는 91MB 를 다 받은 뒤 **아무 일도 안
+  // 일어나는 것**을 본다 — 이 커밋이 없애려던 바로 그 증상이 새 문으로 돌아온다.
+  // 쪽지는 실패를 보이게 하는 보조 장치이지 설치의 전제 조건이 아니다.
+  try {
+    store.data.pendingUpdate = { version: decision.version, installer }
+    store.save()
+  } catch (err) {
+    console.warn(`업데이트 쪽지를 남기지 못했다 (${err.code}) — 설치는 그대로 진행한다`)
+  }
   app.relaunch({ execPath: installer, args: ['/S', '--force-run', '--updated'] })
   app.quit()
 }
@@ -1418,33 +1466,97 @@ async function runUpdateCheck ({ silent }) {
  */
 function startupUpdateReport () {
   const pending = store.data.pendingUpdate
-  if (!pending) return
-  // 읽었으면 지운다. 여기서 지우지 않으면 이 쪽지 하나 때문에 실패 안내가
-  // 매번 뜨는, 고치려던 것과 똑같은 모양의 반복이 생긴다.
-  store.data.pendingUpdate = null
-  store.save()
+  if (!pending) return false
 
   const stamp = currentBuildStamp()
-  if (decideUpdateOutcome(stamp, pending.version) !== 'failed') return
+  const outcome = decideUpdateOutcome(stamp, pending.version)
 
+  // **판정하지 못하면 쪽지에 손대지 않는다.** 개발 실행(npm start)에는 빌드
+  // 스탬프가 없어 언제나 'unknown' 인데, 개발 실행도 릴리즈본과 **같은**
+  // state.json 을 쓴다(userData 경로는 package.json 의 name 에서 온다). 여기서
+  // 지우면 릴리즈본이 겪은 설치 실패가 npm start 한 번에 영영 묻힌다 — 하필
+  // 그것을 재현해야 하는 사람이 그 개발자다.
+  if (outcome === 'unknown') return false
+  if (outcome === 'applied') {
+    forgetPendingUpdate()
+    return false
+  }
+
+  // 여기부터는 설치가 적용되지 않았다.
   declinedUpdateVersion = pending.version
   const installer = typeof pending.installer === 'string' && fs.existsSync(pending.installer)
     ? pending.installer
     : null
   dialog.showMessageBox({
     type: 'warning',
-    buttons: installer ? ['설치 파일 열기', '닫기'] : ['닫기'],
+    buttons: installer ? ['설치 파일 위치 열기', '닫기'] : ['닫기'],
     defaultId: 0,
     cancelId: installer ? 1 : 0,
     message: `업데이트 ver. ${pending.version} 가 설치되지 않았습니다.`,
     detail: `지금 버전: ${stamp}\n\n` +
       '설치 관리자가 앱이 아직 떠 있다고 보고 아무것도 하지 않은 채 물러난 것으로 보입니다.\n' +
       (installer
-        ? '[설치 파일 열기] 를 누른 뒤, 트레이 아이콘에서 [종료] 로 앱을 완전히 끄고 그 파일을 실행해 주세요.'
+        ? '[설치 파일 위치 열기] 를 누른 뒤, 트레이 아이콘에서 [종료] 로 앱을 완전히 끄고 그 파일을 실행해 주세요.'
         : '받아 둔 설치 파일이 남아 있지 않습니다. 트레이의 [업데이트 확인] 으로 다시 시도해 주세요.')
   }).then((res) => {
-    if (installer && res.response === 0) shell.showItemInFolder(installer)
-  }).catch(() => {})
+    // **쪽지는 사용자가 이 사실을 들은 뒤에 지운다.** 창을 띄우자마자 지우면,
+    // 자리를 비운 사이 재부팅이 한 번 끼는 것만으로 실패 사실이 통째로
+    // 사라진다 — 이 창은 어느 창에도 매달리지 않아 모달이 아니고, 몇 시간이고
+    // 열린 채로 있을 수 있다.
+    // **이 dialog 는 모달이 아니라 몇 시간이고 열려 있을 수 있다.** 그 사이
+    // 4시간 주기 확인이나 트레이의 [업데이트 확인] 이 **더 새 버전**을 찾아
+    // pendingUpdate 를 새 값으로 덮어쓰고 재시작할 수 있다 —
+    // declinedUpdateVersion 은 같은 버전만 막지 다른 버전은 막지 않는다. 그때
+    // 뒤늦게 이 콜백이 무조건 지우면, 방금 실패를 알린 그 쪽지가 아니라 아직
+    // 아무도 못 본 새 쪽지가 사라진다. pending 을 넘겨 "그때 그 쪽지가 아직도
+    // 그대로일 때만" 지운다.
+    forgetPendingUpdate(pending)
+    if (!installer || res.response !== 0) return
+    // 그 몇 시간 사이에 %TEMP% 는 윈도우가 치운다. 존재 확인을 처음 한 번만
+    // 하고 넘어가면, 사용자가 누른 단 하나의 단추가 빈 폴더를 연다.
+    if (!fs.existsSync(installer)) {
+      dialog.showMessageBox({
+        type: 'info',
+        message: '받아 둔 설치 파일이 그 사이에 지워졌습니다.',
+        detail: '윈도우가 임시 폴더를 정리한 것으로 보입니다.\n' +
+                '트레이의 [업데이트 확인] 으로 다시 받아 주세요.'
+      }).catch((err) => { console.warn(`안내 창을 띄우지 못했다: ${err.message}`) })
+      return
+    }
+    shell.showItemInFolder(installer)
+  }).catch((err) => {
+    // 여기까지 오면 사용자가 누를 수 있었던 단 하나의 단추가 무반응이었다는
+    // 뜻이다. 조용히 삼키면 "눌러도 아무 일이 없는 창"만 남는다.
+    console.warn(`설치 파일 위치를 열지 못했다: ${err.message}`)
+    if (installer) dialog.showErrorBox('설치 파일을 열지 못했습니다', `직접 실행해 주세요:\n${installer}`)
+  })
+  return true
+}
+
+/**
+ * 업데이트 쪽지를 지운다. **던지지 않는다.**
+ *
+ * 이 함수는 whenReady 체인 안(과 그 체인이 건 dialog 콜백 안)에서 불린다.
+ * 최상위 .catch 가 있어 여기서 던져도 앱이 유령 상태로 멈추지는 않지만, 그
+ * catch 의 대응은 안내 창을 띄우고 **앱을 통째로 종료하는 것**이다 — 쪽지 한
+ * 줄 못 지운 대가로 세션 전체를 날릴 이유가 없다. 여기서 삼키면 대가는 다음
+ * 실행에서 같은 안내가 한 번 더 뜨는 것뿐이다. 어느 쪽이 나쁜지는 견줄
+ * 필요도 없다.
+ *
+ * @param {object} [expected] 넘기면, 그 사이 pendingUpdate 가 다른 값으로
+ *   바뀌어 있으면 지우지 않는다. startupUpdateReport 의 실패 안내는 모달이
+ *   아니라 몇 시간이고 떠 있을 수 있고, 그 사이 더 새 업데이트가 pendingUpdate
+ *   를 덮어썼을 수 있다 — 그러면 여기서 지워야 할 것은 사용자가 방금 읽은 그
+ *   쪽지지, 아직 아무도 못 본 새 쪽지가 아니다.
+ */
+function forgetPendingUpdate (expected) {
+  if (expected !== undefined && store.data.pendingUpdate !== expected) return
+  store.data.pendingUpdate = null
+  try {
+    store.save()
+  } catch (err) {
+    console.warn(`업데이트 쪽지를 지우지 못했다 (${err.code}) — 다음 실행에서 한 번 더 뜬다`)
+  }
 }
 
 /**
@@ -1958,21 +2070,45 @@ app.whenReady().then(async () => {
   for (const id of store.visibleIds()) createNoteWindow(id)
   createListWindow()
 
-  // 지난번에 시도한 설치가 적용됐는지 먼저 따진다. 아래의 조용한 확인보다
-  // **앞이어야 한다** — 실패했다면 그 버전을 declinedUpdateVersion 에 넣어야
-  // 하고, 그 기억은 checkForUpdate 가 읽기 전에 자리를 잡아야 한다. 순서가
-  // 뒤집히면 실패 안내와 "새 버전이 있습니다" 창이 나란히 뜬다.
-  startupUpdateReport()
+  // 지난번에 시도한 설치가 적용됐는지 먼저 따진다.
+  //
+  // **실패를 알렸으면 이번 시작의 조용한 확인은 건너뛴다.** 안에서 거는
+  // declinedUpdateVersion 만으로는 모자라다 — 그것은 **같은 버전**일 때만
+  // 막는데, 실패한 사이에 더 새 릴리즈가 올라와 있으면 버전이 달라 그대로
+  // 통과한다. 그러면 방금 "설치되지 않았습니다"를 읽은 사용자 앞에 "새 버전이
+  // 있습니다"가 곧바로 한 장 더 뜬다. 방금 그 이야기를 했으니 이번 시작은
+  // 여기서 그친다 — 4시간 뒤 주기 확인이 다시 묻고, 트레이의 [업데이트 확인] 은
+  // 언제든 열려 있다.
+  const reportedUpdateFailure = startupUpdateReport()
 
   // 시작하고 나서 조용히 한 번 확인한다. 목록 창이 뜬 **뒤**라 앱을 켜는 속도를
   // 늦추지 않고, 새 버전이 없으면 아무 말도 하지 않는다. 실패(네트워크 없음 등)도
   // 삼킨다 — 업데이트 확인 때문에 앱을 못 쓰게 되면 안 된다.
-  checkForUpdate({ silent: true }).catch(() => {})
+  if (!reportedUpdateFailure) checkForUpdate({ silent: true }).catch(() => {})
 
   // 그 뒤로는 주기적으로 다시 본다. 켜 둔 동안 올라온 릴리즈도 잡아야 한다.
   // unref() 로 이 타이머가 앱의 수명을 붙잡지 않게 한다 — 종료를 늦추면 안 된다.
   setInterval(() => { checkForUpdate({ silent: true }).catch(() => {}) },
     UPDATE_INTERVAL_MS).unref()
+}).catch((err) => {
+  // **시작 절차에는 지금까지 이것을 받는 곳이 없었다.** 그래서 중간에 무엇이
+  // 던지면 처리되지 않은 거절이 되고, 앱은 "떠 있는데 뒷부분만 조용히 안 도는"
+  // 상태가 됐다 — 트레이도 창도 멀쩡한데 업데이트 확인만 영영 등록되지 않는
+  // 식이다. 그 모양이 이 파일이 곳곳에서 막으려는 유령 상태이고, ensureAuth
+  // 주석이 이미 한 번 지목한 것이다.
+  //
+  // **알리는 것만으로는 안 된다.** 이 catch 가 닿는 시점에는 ensureTray() 와
+  // startSidecar() 가 이미 지나 있다 — 트레이 아이콘과 마스터 토큰을 쥔 Python
+  // 자식이 떠 있다는 뜻이다. 안내만 띄우고 return 하면 "앱을 다시 시작해
+  // 주세요"라고 말해 놓고, 정작 단일 인스턴스 잠금(app.requestSingleInstanceLock)
+  // 때문에 다시 켜도 이 죽은 인스턴스에 second-instance 로 부딪힐 뿐이라 사용자가
+  // 작업 관리자 없이는 그 말을 따를 수조차 없다. ensureAuth 의 실패 경로와 같은
+  // 원칙을 따른다 — 실패를 반환한 쪽이 종료까지 책임진다.
+  console.error(`시작 절차가 끝나지 못했다: ${err && err.stack}`)
+  dialog.showErrorBox('시작을 끝내지 못했습니다',
+    `${err && err.message}\n\n앱을 다시 시작해 주세요. 메모 내용은 Keep 에 그대로 있습니다.`)
+  stopSidecar('시작 절차 실패')
+  app.quit()
 })
 
 // 정리를 window-all-closed 한 곳에만 두면 안 된다. 이 이벤트는 app.quit() 이나
