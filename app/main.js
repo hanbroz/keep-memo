@@ -177,6 +177,9 @@ let tray = null
 let startupComplete = false
 const noteWindows = new Map() // noteId -> BrowserWindow
 const flushWaiters = new Map() // webContents.id -> 대기 해제 함수
+// 되살리기 빈도 기록. createNoteWindow 의 지역 변수였다가, GPU 프로세스
+// 사고(아래 child-process-gone)도 같은 문턱을 타야 해서 모듈 스코프로 옮겼다.
+const reviveTimes = new Map() // noteId -> performance.now() 배열
 
 // 접힌 메모의 순서. 같은 모니터에 접힌 것끼리 이 순서대로 위에서 아래로 쌓인다.
 // displayId 를 접을 때 함께 적어두는 이유: 접고 나면 창은 책갈피 자리로
@@ -685,6 +688,19 @@ function applyMinimalMenu () {
 let lastFocusedWindow = null
 app.on('browser-window-focus', (_e, win) => { lastFocusedWindow = win })
 
+// GPU 프로세스가 죽으면(그래픽 드라이버 재설정, 절전 복귀 중 컨텍스트 유실
+// 등) 렌더러 프로세스 자신은 멀쩡히 살아 있어 각 창의 render-process-gone 은
+// 뜨지 않는데도, 창은 그린 그림만 잃고 하얗게 굳는다 — 흰 책갈피의 또 다른
+// 경로다. 모든 창이 GPU 프로세스 하나를 공유하므로 사고 한 번이 열린
+// 책갈피를 한꺼번에 하얗게 만든다. reviveNoteWindow 가 창마다 따로 빈도를
+// 세므로, 여기서는 살아 있는 노트 창 전부에 되살리기를 걸기만 하면 된다.
+app.on('child-process-gone', (_event, details) => {
+  if (details.type !== 'GPU') return
+  for (const [noteId, win] of noteWindows) {
+    if (!win.isDestroyed()) reviveNoteWindow(win, noteId, `GPU 프로세스 사고 (${details.reason})`)
+  }
+})
+
 /**
  * 지금 보고 있는 창의 개발자 도구를 연다.
  *
@@ -847,40 +863,10 @@ function createNoteWindow (noteId) {
   win.loadFile(path.join(__dirname, 'renderer', 'note.html'))
   noteWindows.set(noteId, win)
 
-  // 렌더러가 죽으면(크래시·OS 의 강제 종료) 창은 그대로 남고 그림만 사라진다.
-  // 펼친 포스트잇이라면 눈에 띄기라도 하지만, 접힌 책갈피는 44px 짜리 흰 띠가
-  // 되어 **펼칠 수도 닫을 수도 없는 손잡이**로 굳는다 — 클릭을 받을 렌더러가
-  // 없으니 눌러도 아무 일이 없고, 사용자가 할 수 있는 일은 목록 창에서 체크를
-  // 껐다 켜는 우회뿐이다. 한 번은 스스로 되살린다. 되살아나면 아래
-  // did-finish-load 가 접힘 상태를 다시 보내므로 책갈피 글자까지 그대로 돌아온다.
-  //
-  // **되살리기를 "평생 한 번"으로 묶었던 것이 이 버그가 두 번 온 이유다.**
-  // 무한 반복을 막으려던 그 상한은 맞는 걱정에서 나왔지만 세는 단위가 틀렸다.
-  // 이 앱은 트레이에 며칠씩 사는 상주 앱이고, 렌더러는 크래시 말고도 죽는다 —
-  // 윈도우가 메모리 압박에 뒤에 있는 렌더러를 거둬 가는 것이 그렇다. 그렇게
-  // 한 번 되살아난 창은 그 뒤로 무방비가 되어, 몇 시간 뒤 다음 죽음에서 다시
-  // 흰 띠로 굳는다. 되살리기가 쌓이는 것은 정상이다.
-  //
-  // 그래서 상한을 "한 시간에 REVIVE_MAX_IN_WINDOW 번"으로 둔다. 왜 간격이
-  // 아니라 빈도인지는 그 상수의 주석에 있다.
-  //
-  // **단조 시계(performance.now)를 쓴다.** Date.now() 는 벽시계라 NTP 보정이나
-  // 절전 복귀에 뒤로 갈 수 있고, 그러면 뺄셈이 음수가 되어 "방금 되살렸다"로
-  // 오판한다 — 되살릴 수 있는 창을 되살리지 않고 흰 띠로 굳히는 쪽으로 틀린다.
-  let reviveTimes = []
+  // 렌더러가 죽으면 창은 그대로 남고 그림만 사라진다(흰 책갈피). 되살리기
+  // 규칙의 근거는 reviveNoteWindow 에 있다.
   win.webContents.on('render-process-gone', (_event, details) => {
-    // 종료 절차가 시작됐으면 손대지 않는다. 닫는 중인 창의 렌더러를 다시
-    // 띄우는 것은 낭비이고, 그 와중에 뜨는 경고 창은 안내가 아니라 종료를
-    // 가로막는 방해물이다.
-    if (quitTeardownStarted || win.isDestroyed()) return
-    const now = performance.now()
-    reviveTimes = reviveTimes.filter((t) => now - t < REVIVE_WINDOW_MS)
-    if (reviveTimes.length >= REVIVE_MAX_IN_WINDOW) {
-      noticeStuckNote(noteId, details)
-      return
-    }
-    reviveTimes.push(now)
-    win.webContents.reload()
+    reviveNoteWindow(win, noteId, (details && details.reason) || '알 수 없음')
   })
 
   const persistBounds = () => {
@@ -933,6 +919,7 @@ function createNoteWindow (noteId) {
     // 위 중복 방지 덕에 보통은 항상 참이지만, 지도에서 지우기 전에 확인한다 —
     // 남의 항목을 지우면 살아 있는 창이 미아가 된다.
     if (noteWindows.get(noteId) === win) noteWindows.delete(noteId)
+    reviveTimes.delete(noteId)
     closingNotes.delete(noteId)
     // 접힌 채로 닫힌 메모는 책갈피 줄에서 빠지고, 아래 것들이 빈자리를 메운다.
     forgetFold(noteId)
@@ -993,8 +980,45 @@ let stuckNoticeInFlight = null
  * console.warn 은 패키징본에 콘솔이 없어 아무 데도 닿지 않으므로, 사용자가
  * 화면을 찍어 보낼 때 그 값이 함께 오게 하는 것이 유일하게 남는 길이다.
  */
-function noticeStuckNote (noteId, details) {
-  const reason = (details && details.reason) || '알 수 없음'
+// 렌더러가 죽으면(크래시·OS 의 강제 종료·GPU 프로세스 사고) 창은 그대로
+// 남고 그림만 사라진다. 펼친 포스트잇이라면 눈에 띄기라도 하지만, 접힌
+// 책갈피는 44px 짜리 흰 띠가 되어 **펼칠 수도 닫을 수도 없는 손잡이**로
+// 굳는다 — 클릭을 받을 렌더러가 없으니 눌러도 아무 일이 없고, 사용자가 할
+// 수 있는 일은 목록 창에서 체크를 껐다 켜는 우회뿐이다. 여기서 한 번은
+// 스스로 되살린다. 되살아나면 did-finish-load 가 접힘 상태를 다시 보내므로
+// 책갈피 글자까지 그대로 돌아온다.
+//
+// **되살리기를 "평생 한 번"으로 묶었던 것이 이 버그가 두 번 온 이유다.**
+// 무한 반복을 막으려던 그 상한은 맞는 걱정에서 나왔지만 세는 단위가 틀렸다.
+// 이 앱은 트레이에 며칠씩 사는 상주 앱이고, 렌더러는 크래시 말고도 죽는다 —
+// 윈도우가 메모리 압박에 뒤에 있는 렌더러를 거둬 가는 것이 그렇다. 그렇게
+// 한 번 되살아난 창은 그 뒤로 무방비가 되어, 몇 시간 뒤 다음 죽음에서 다시
+// 흰 띠로 굳는다. 되살리기가 쌓이는 것은 정상이다.
+//
+// 그래서 상한을 "한 시간에 REVIVE_MAX_IN_WINDOW 번"으로 둔다. 왜 간격이
+// 아니라 빈도인지는 그 상수의 주석에 있다.
+//
+// **단조 시계(performance.now)를 쓴다.** Date.now() 는 벽시계라 NTP 보정이나
+// 절전 복귀에 뒤로 갈 수 있고, 그러면 뺄셈이 음수가 되어 "방금 되살렸다"로
+// 오판한다 — 되살릴 수 있는 창을 되살리지 않고 흰 띠로 굳히는 쪽으로 틀린다.
+function reviveNoteWindow (win, noteId, reason) {
+  // 종료 절차가 시작됐으면 손대지 않는다. 닫는 중인 창의 렌더러를 다시
+  // 띄우는 것은 낭비이고, 그 와중에 뜨는 경고 창은 안내가 아니라 종료를
+  // 가로막는 방해물이다.
+  if (quitTeardownStarted || win.isDestroyed()) return
+  const now = performance.now()
+  const times = (reviveTimes.get(noteId) || []).filter((t) => now - t < REVIVE_WINDOW_MS)
+  if (times.length >= REVIVE_MAX_IN_WINDOW) {
+    reviveTimes.set(noteId, times)
+    noticeStuckNote(noteId, reason)
+    return
+  }
+  times.push(now)
+  reviveTimes.set(noteId, times)
+  win.webContents.reload()
+}
+
+function noticeStuckNote (noteId, reason) {
   console.warn(`메모 ${noteId} 의 렌더러가 되풀이해 죽는다 (${reason}) — 되살리기를 멈춘다`)
   if (stuckNoticeInFlight) return
   stuckNoticeInFlight = dialog.showMessageBox({
