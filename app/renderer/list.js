@@ -243,6 +243,17 @@ function render () {
     label.append(check, text)
     li.append(label)
 
+    // 더블클릭은 [완료] 를 기다리지 않고 곧바로 띄운다. <label> 안이라 앞선 두
+    // 번의 click 이 체크를 켰다 껐다 하므로, 끝난 상태와 상관없이 켠다 — 띄운
+    // 메모가 체크 안 된 채로 남으면 다음 [완료] 가 그것을 도로 내린다.
+    label.addEventListener('dblclick', () => {
+      check.checked = true
+      checkedIds.add(note.id)
+      window.keepSticky.openNote(note.id).catch(() => {
+        showToast('메모를 띄우지 못했습니다.')
+      })
+    })
+
     // 왜 이 행이 위에 있는지를 그림쇠로 말해 준다. 묶음은 고정 → 보관 →
     // 나머지이고 정렬은 사이드카가 한다(_serialize_for_list). 어느 쪽도
     // 목록에서 감추지 않는다 — 감추면 이 앱에서 그 상태를 되돌릴 길이 사라진다.

@@ -1772,6 +1772,10 @@ app.whenReady().then(async () => {
   // createNoteWindow 가 이미 있는 창은 앞으로 가져오기만 한다.
   ipcMain.handle('notes:open', (_e, id) => {
     createNoteWindow(id)
+    // 목록에서 "보여 달라"고 연 것이다. 책갈피로 접혀 있으면(이미 떠 있든,
+    // 접힌 채 저장돼 있다가 방금 다시 접혔든) 펼친다 — 접힌 채 앞으로 오면
+    // 44px 띠만 깜박여 아무 일도 안 일어난 것처럼 보인다.
+    unfoldNote(id)
     return { ok: true }
   })
 
