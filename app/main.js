@@ -98,6 +98,18 @@ if (!gotSingleInstanceLock) {
   return
 }
 
+// Chromium 의 "가려진 창 계산"을 끈다. 화면이 잠기면 모든 창이 가려진 것으로
+// 분류되어 그림을 멈추는데, 잠금이 풀린 뒤 작고 늘 맨 앞인 창(책갈피)이 그
+// 분류에서 돌아오지 못하면 글자 없는 띠로 남는다 — Electron 이 Windows 에서
+// 잠금 해제 뒤 빈 창으로 알려진 경로다. 끄는 비용은 가려진 포스트잇도 계속
+// 그리는 것뿐인데, 포스트잇은 거의 정지 화면이라 무시할 만하다. ready 이전에
+// 걸어야 먹는다. 이것으로 못 막는 경우는 아래 '잠금 해제 점검'이 잡는다.
+// appendSwitch 는 같은 이름의 값을 덮어쓰므로, 이미 걸린 값(디버깅용 실행 인자
+// 등)이 있으면 이어 붙인다.
+app.commandLine.appendSwitch('disable-features',
+  [app.commandLine.getSwitchValue('disable-features'), 'CalculateNativeWinOcclusion']
+    .filter(Boolean).join(','))
+
 // 두 번째 인스턴스를 실행하려는 시도가 있으면(=방금 위에서 잠금에 실패한
 // 프로세스가 있으면) 이 인스턴스로 알림이 온다.
 //
@@ -696,9 +708,147 @@ app.on('browser-window-focus', (_e, win) => { lastFocusedWindow = win })
 // 세므로, 여기서는 살아 있는 노트 창 전부에 되살리기를 걸기만 하면 된다.
 app.on('child-process-gone', (_event, details) => {
   if (details.type !== 'GPU') return
+  noteLog(`GPU 프로세스 사고: ${details.reason}`)
   for (const [noteId, win] of noteWindows) {
     if (!win.isDestroyed()) reviveNoteWindow(win, noteId, `GPU 프로세스 사고 (${details.reason})`)
   }
+})
+
+// --- 잠금 해제 점검 ------------------------------------------------------
+//
+// 화면을 잠갔다가 풀면 책갈피가 글자 없는 띠로 남고 눌러도 반응이 없었다. 렌더러
+// 사고(render-process-gone)도 GPU 사고(child-process-gone)도 아니라서 위의
+// 되살리기 어느 쪽에도 걸리지 않는 경로다 — 프로세스는 살아 있는데 그림을 다시
+// 내지 못하거나(잠금 동안 "가려진 창"으로 분류되어 그림을 멈췄다가 못 돌아옴),
+// 일을 받지 못하는 상태로 멈춰 있다. 앱에 로그가 없어 둘 중 어느 쪽인지 사후에
+// 가릴 수 없었으므로, 원인을 하나로 단정하지 않고 결과를 직접 확인한다:
+//
+//   1. 잠금 해제 뒤 잠시 기다렸다가 창마다 다시 그리게 하고(invalidate),
+//      렌더러에게 "지금 책갈피 글자가 들어 있나"를 묻는다.
+//   2. 대답이 없거나(멈춤) 글자가 없거나 그림이 비어 있으면, **그 창을 숨긴다.**
+//      글자 없는 띠는 눌러도 아무 일이 없는 손잡이일 뿐이고 오히려 고장으로
+//      읽힌다 — 차라리 안 보이는 편이 낫다.
+//   3. 숨긴 채로 다시 띄우고(reload), 다시 확인해서 글자가 그려졌을 때만 보인다.
+//      되살리기 횟수 상한은 reviveNoteWindow 의 것을 그대로 탄다.
+//
+// 눌렀는데 반응이 없는 경우는 Chromium 이 'unresponsive' 로 알려 준다 — 그때도
+// 같은 점검을 건다.
+const NOTE_PROBE_MS = 3000
+// 잠금 화면이 걷히고 창들이 다시 화면에 올라올 시간. 너무 이르면 아직 돌아오는
+// 중인 멀쩡한 창을 고장으로 읽는다.
+const UNLOCK_SETTLE_MS = 2000
+// 다시 띄운 뒤 첫 그림이 나올 시간.
+const RELOAD_SETTLE_MS = 1000
+const hiddenByWatchdog = new Set() // noteId
+
+// 로그. 이 앱에는 여태 로그가 없어 흰 책갈피를 세 번 겪는 동안 매번 증거 없이
+// 추측해야 했다. 고장을 만났을 때만 한 줄씩 남긴다(메모 id 와 원인뿐 — 메모
+// 내용은 적지 않는다).
+function noteLog (line) {
+  try {
+    fs.appendFileSync(path.join(app.getPath('userData'), 'note-health.log'),
+      `${new Date().toISOString()} ${line}\n`)
+  } catch { /* 로그를 못 남겨도 앱은 계속 돈다 */ }
+}
+
+// 렌더러 안에서 돈다. 이 창이 main 이 아는 접힘 상태로 그려져 있고, 접혀
+// 있다면 책갈피 글자가 들어 있는가.
+const probeScript = (folded) => `(() => {
+  const body = document.body
+  if (!body || body.classList.contains('folded') !== ${folded}) return false
+  if (!${folded}) return true
+  const label = document.getElementById('bookmark-label')
+  return !!label && label.childElementCount > 0
+})()`
+
+const timeout = (ms) => new Promise((resolve) => setTimeout(() => resolve('timeout'), ms))
+
+/** 'ok' | 'blank'(살아 있지만 못 그림) | 'hung'(대답 없음) */
+async function probeNote (noteId, win) {
+  const wc = win.webContents
+  if (!wc.isLoading()) wc.invalidate()
+  const answer = await Promise.race([
+    wc.executeJavaScript(probeScript(isFolded(noteId)), true).catch(() => false),
+    timeout(NOTE_PROBE_MS)
+  ])
+  if (answer === 'timeout') return 'hung'
+  if (answer !== true) return 'blank'
+  // DOM 에 글자가 있어도 화면에 안 나왔을 수 있다. 숨겨 둔 창은 찍을 그림이
+  // 없으므로 찍지 않는다(그때는 위의 DOM 확인이 기준이다).
+  if (!win.isVisible()) return 'ok'
+  const image = await Promise.race([wc.capturePage().catch(() => null), timeout(NOTE_PROBE_MS)])
+  return image && image !== 'timeout' && !image.isEmpty() ? 'ok' : 'blank'
+}
+
+// 같은 창을 두 점검이 겹쳐 보면, 먼저 끝난 쪽이 띄운 새 렌더러를 늦게 끝난
+// 쪽이 옛 렌더러의 타임아웃을 근거로 다시 죽인다 — 되살리기 상한만 태운다.
+const checkingNotes = new Set() // noteId
+
+async function checkNoteWindow (noteId, win, why) {
+  if (quitTeardownStarted || win.isDestroyed() || checkingNotes.has(noteId)) return
+  checkingNotes.add(noteId)
+  try {
+    await checkNoteWindowOnce(noteId, win, why)
+  } finally {
+    checkingNotes.delete(noteId)
+  }
+}
+
+async function checkNoteWindowOnce (noteId, win, why) {
+  // 이미 죽은 렌더러는 묻지 않는다(대답이 영영 안 온다). 되살리기 상한에 걸려
+  // 숨겨진 채 남은 창이 상한이 풀린 뒤의 점검에서 다시 살아나는 길이 이것이다.
+  if (win.webContents.isCrashed()) {
+    hiddenByWatchdog.add(noteId)
+    win.hide()
+    reviveNoteWindow(win, noteId, `${why}: 렌더러 없음`)
+    return
+  }
+  const verdict = await probeNote(noteId, win)
+  if (quitTeardownStarted || win.isDestroyed()) return
+  // 대답이 늦은 것만으로는 펼친 메모를 끊지 않는다. 삭제 확인(confirm)이 떠
+  // 있으면 렌더러는 멀쩡해도 대답을 못 하고, 절전 직후엔 그냥 느리기도 하다 —
+  // 그때 끊으면 미저장 편집이 사라진다. 진짜 멈춤은 사용자가 눌렀을 때
+  // Chromium 이 'unresponsive' 로 알려 준다(확인창이 떠 있는 동안은 안 알린다).
+  // 접힌 책갈피는 접을 때 이미 저장했고 확인창도 뜰 수 없으므로 바로 다룬다.
+  if (verdict === 'hung' && why !== '응답 없음' && !isFolded(noteId)) {
+    noteLog(`${noteId} 대답 없음 (${why}) — 펼친 메모라 'unresponsive' 를 기다린다`)
+    return
+  }
+  if (verdict === 'ok') {
+    if (hiddenByWatchdog.delete(noteId)) {
+      noteLog(`${noteId} 다시 보임`)
+      // 포커스는 가져오지 않는다. 사용자가 다른 일을 하는 중일 수 있다.
+      win.showInactive()
+    }
+    return
+  }
+  noteLog(`${noteId} ${verdict} (${why}) — 숨기고 다시 띄운다`)
+  hiddenByWatchdog.add(noteId)
+  win.hide()
+  if (verdict === 'hung') {
+    // 멈춘 렌더러는 reload 를 받지 못한다. 공식 문서가 권하는 대로 끊고 다시
+    // 띄운다 — render-process-gone 이 reviveNoteWindow 로 이어진다.
+    win.webContents.forcefullyCrashRenderer()
+    return
+  }
+  // 살아 있는 렌더러다. 다시 띄우기 전에 미저장 편집을 받아 둔다.
+  await requestFlush(win)
+  if (!win.isDestroyed()) reviveNoteWindow(win, noteId, `${why}: 그림 없음`)
+}
+
+function checkAllNoteWindows (why) {
+  for (const [noteId, win] of noteWindows) {
+    if (!win.isDestroyed() && !closingNotes.has(noteId)) checkNoteWindow(noteId, win, why)
+  }
+}
+
+// 절전 복귀('resume')에는 걸지 않는다. 깨어난 직후는 대개 아직 잠금 화면
+// 위라서, 그때 찍은 그림이 비어 멀쩡한 메모를 전부 숨겼다 띄울 수 있다. 잠긴
+// 채 깨어났다면 풀 때 'unlock-screen' 이 어차피 온다.
+app.whenReady().then(() => {
+  electron.powerMonitor.on('unlock-screen', () => {
+    setTimeout(() => checkAllNoteWindows('잠금 해제'), UNLOCK_SETTLE_MS)
+  })
 })
 
 /**
@@ -866,6 +1016,7 @@ function createNoteWindow (noteId) {
   // 렌더러가 죽으면 창은 그대로 남고 그림만 사라진다(흰 책갈피). 되살리기
   // 규칙의 근거는 reviveNoteWindow 에 있다.
   win.webContents.on('render-process-gone', (_event, details) => {
+    noteLog(`${noteId} 렌더러 사라짐: ${(details && details.reason) || '알 수 없음'}`)
     reviveNoteWindow(win, noteId, (details && details.reason) || '알 수 없음')
   })
 
@@ -900,7 +1051,15 @@ function createNoteWindow (noteId) {
 
   // 렌더러는 자기가 접혀 있는지 모르는 채로 뜬다. 로드가 끝나는 시점에 알려야
   // 재시작 복원(접힌 채 저장된 메모)에서도 책갈피 모습으로 그려진다.
-  win.webContents.on('did-finish-load', () => sendFoldState(noteId))
+  win.webContents.on('did-finish-load', () => {
+    sendFoldState(noteId)
+    // 점검이 숨기고 다시 띄운 창이다. 글자가 그려진 것을 확인한 뒤에만 보인다.
+    if (hiddenByWatchdog.has(noteId)) {
+      setTimeout(() => checkNoteWindow(noteId, win, '다시 띄운 뒤'), RELOAD_SETTLE_MS)
+    }
+  })
+  // 눌렀는데 렌더러가 대답하지 않는다 — "클릭해도 반응 없음"이 바로 이것이다.
+  win.webContents.on('unresponsive', () => checkNoteWindow(noteId, win, '응답 없음'))
 
   // OS 가 창을 닫는 경로(Alt+F4, 작업 관리자, 종료/로그오프)는 렌더러의 ✕
   // 핸들러를 거치지 않는다. 그래서 ✕ 가 하는 "닫기 전에 flush" 가 통째로
@@ -921,6 +1080,7 @@ function createNoteWindow (noteId) {
     if (noteWindows.get(noteId) === win) noteWindows.delete(noteId)
     reviveTimes.delete(noteId)
     closingNotes.delete(noteId)
+    hiddenByWatchdog.delete(noteId)
     // 접힌 채로 닫힌 메모는 책갈피 줄에서 빠지고, 아래 것들이 빈자리를 메운다.
     forgetFold(noteId)
     relayoutBookmarks()
@@ -1024,7 +1184,7 @@ function noticeStuckNote (noteId, reason) {
   stuckNoticeInFlight = dialog.showMessageBox({
     type: 'warning',
     message: '메모 하나가 응답하지 않습니다.',
-    detail: '글자 없이 흰 사각형이나 흰 띠로 남은 메모가 있다면 그것입니다.\n' +
+    detail: '글자 없이 흰 사각형이나 흰 띠로 남았거나, 화면에서 사라진 메모가 있다면 그것입니다.\n' +
             '눌러도 반응하지 않고, 닫기 단추도 함께 사라져 직접 닫을 수 없습니다.\n\n' +
             '목록 창에서 그 메모의 체크를 껐다가 다시 켜면 새로 만들어집니다.\n' +
             '메모 내용은 Keep 에 그대로 있으므로 사라지지 않습니다.\n\n' +
