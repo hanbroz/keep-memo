@@ -9,16 +9,27 @@
     "dist": "node scripts/build.js"
   },
   "devDependencies": {
-    "electron": "^33.0.0",
+    "electron": "^45.0.0",
     "electron-builder": "^25.0.0"
   },
   "build": {
     "appId": "com.keepsticky.app",
     "productName": "Keep Sticky",
-    "files": ["app/**/*", "package.json"],
-    "extraResources": [{ "from": "dist-py/keep_service.exe", "to": "keep_service.exe" }],
+    "files": [
+      "app/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "dist-py/keep_service.exe",
+        "to": "keep_service.exe"
+      }
+    ],
     "artifactName": "KeepSticky-Setup-${env.BUILD_STAMP}.${ext}",
-    "win": { "target": "nsis", "icon": "google-keep-electron.ico" },
+    "win": {
+      "target": "nsis",
+      "icon": "google-keep-electron.ico"
+    },
     "nsis": {
       "oneClick": true,
       "perMachine": false,
